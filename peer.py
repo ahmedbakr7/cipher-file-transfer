@@ -4,42 +4,41 @@ import json
 import os
 import uuid
 import time
-import upnpclient
-import requests
 from pathlib import Path
 
 
 class P2PClient:
-    def __init__(self, rendezvous_host='localhost', rendezvous_port=5000, listen_port=0):
+    def __init__(self, rendezvous_host='localhost', rendezvous_port=5000, receive_port=0, send_port=0, client_name=None):
         self.client_id = str(uuid.uuid4())
+        self.client_name = client_name or self.client_id[:8]  # Use shortened UUID if no name provided
         self.rendezvous_host = rendezvous_host
         self.rendezvous_port = rendezvous_port
-        self.listen_port = listen_port
-        self.shared_folder = 'shared_files'
-        self.downloads_folder = 'downloads'
+        self.receive_port = receive_port
+        self.send_port = send_port
+        
+        # Use environment variables if set, otherwise use default directories
+        self.shared_folder = os.environ.get('P2P_SHARED_FOLDER', 'shared_files')
+        self.downloads_folder = os.environ.get('P2P_DOWNLOADS_FOLDER', 'downloads')
+        
         self.shared_files = []
         self.peers = {}
         self.listen_socket = None
         self.running = False
         self.connected = False
-
-        # Port forwarding attributes
-        self.port_forwarding_active = False
-        self.upnp_device = None
-        self.external_ip = None
-        self.external_port = None
-        self.port_mapping = None
-
+        
         # Create folders if they don't exist
         os.makedirs(self.shared_folder, exist_ok=True)
         os.makedirs(self.downloads_folder, exist_ok=True)
+        
+        print(f"Client '{self.client_name}' initialized")
+        print(f"Using shared folder: {self.shared_folder}")
+        print(f"Using downloads folder: {self.downloads_folder}")
 
     def start(self):
         """Start the P2P client by setting up listening socket and connecting to rendezvous"""
         self.running = True
         self._setup_listen_socket()
         self._scan_shared_folder()
-        self.setup_port_forwarding(self.listen_port)
         self._connect_to_rendezvous()
         self._start_listener_thread()
 
@@ -48,11 +47,21 @@ class P2PClient:
         self.listen_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self.listen_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
 
-        # If listen_port is 0, the OS will assign a port
-        self.listen_socket.bind(('0.0.0.0', self.listen_port))
-        self.listen_port = self.listen_socket.getsockname()[1]  # Get the assigned port
+        # If receive_port is 0, the OS will assign a port
+        self.listen_socket.bind(('0.0.0.0', self.receive_port))
+        self.receive_port = self.listen_socket.getsockname()[1]  # Get the assigned port
+
+        # If send_port is 0 or not specified, use a different port for outgoing connections
+        if self.send_port == 0:
+            # Try to get a port different from receive_port
+            temp_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            temp_socket.bind(('0.0.0.0', 0))
+            self.send_port = temp_socket.getsockname()[1]
+            temp_socket.close()
+
         self.listen_socket.listen(5)
-        print(f"Listening for connections on port {self.listen_port}")
+        print(f"Listening for incoming connections on port {self.receive_port}")
+        print(f"Using port {self.send_port} for outgoing connections")
 
     def _start_listener_thread(self):
         """Start a thread to listen for incoming connections"""
@@ -112,7 +121,8 @@ class P2PClient:
             register_data = {
                 'command': 'register',
                 'client_id': self.client_id,
-                'port': self.listen_port,
+                'receive_port': self.receive_port,
+                'send_port': self.send_port,
                 'files': self.shared_files
             }
             sock.send(json.dumps(register_data).encode('utf-8'))
@@ -193,11 +203,13 @@ class P2PClient:
 
         peer_info = self.peers[peer_id]
         peer_ip = peer_info['ip']
-        peer_port = peer_info['port']
+        peer_receive_port = peer_info['receive_port']  # Connect to peer's receiving port
 
         try:
+            # Bind to our send port for the outgoing connection
             sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            sock.connect((peer_ip, peer_port))
+            sock.bind(('0.0.0.0', self.send_port))
+            sock.connect((peer_ip, peer_receive_port))
 
             # Send file request
             request_data = {
@@ -325,108 +337,8 @@ class P2PClient:
 
         return all_files
 
-    def setup_port_forwarding(self, port=None):
-        """Set up UPnP port forwarding on the router"""
-        if port is None:
-            port = self.listen_port
-        
-        try:
-            # Discover UPnP devices on the network
-            devices = upnpclient.discover()
-            if not devices:
-                print("No UPnP devices found on the network")
-                return False
-            
-            # Find a device that supports port mapping
-            for device in devices:
-                if 'WANIPConnection' in str(device) or 'WANPPPConnection' in str(device):
-                    self.upnp_device = device
-                    break
-            
-            if not self.upnp_device:
-                print("No UPnP-compatible router found")
-                return False
-            
-            # Get the external IP address
-            for service in self.upnp_device.services:
-                if 'WANIPConnection' in service.name or 'WANPPPConnection' in service.name:
-                    self.external_ip = service.GetExternalIPAddress()['NewExternalIPAddress']
-                    
-                    # Create a port mapping
-                    self.external_port = port
-                    response = service.AddPortMapping(
-                        NewRemoteHost='',
-                        NewExternalPort=port,
-                        NewProtocol='TCP',
-                        NewInternalPort=port,
-                        NewInternalClient=socket.gethostbyname(socket.gethostname()),
-                        NewEnabled=1,
-                        NewPortMappingDescription='P2P File Sharing',
-                        NewLeaseDuration=0
-                    )
-                    
-                    self.port_mapping = {
-                        'service': service,
-                        'external_port': port,
-                        'internal_port': port,
-                        'protocol': 'TCP'
-                    }
-                    self.port_forwarding_active = True
-                    return True
-            
-            return False
-        except Exception as e:
-            print(f"Port forwarding error: {e}")
-            return False
-
-    def check_port_forwarding_status(self):
-        """Check the status of port forwarding"""
-        status = {
-            'active': self.port_forwarding_active,
-            'external_ip': None,
-            'external_port': None,
-            'internal_port': None
-        }
-        
-        if self.port_forwarding_active and self.port_mapping:
-            status['external_ip'] = self.external_ip
-            status['external_port'] = self.port_mapping['external_port']
-            status['internal_port'] = self.port_mapping['internal_port']
-            
-            # Verify that the port mapping still exists
-            try:
-                # Try to check if the mapping still exists
-                # This is implementation-dependent and might not work on all routers
-                pass
-            except Exception:
-                pass
-        
-        return status
-
-    def remove_port_forwarding(self):
-        """Remove the port forwarding rule"""
-        if not self.port_forwarding_active or not self.port_mapping:
-            return False
-        
-        try:
-            service = self.port_mapping['service']
-            service.DeletePortMapping(
-                NewRemoteHost='',
-                NewExternalPort=self.port_mapping['external_port'],
-                NewProtocol=self.port_mapping['protocol']
-            )
-            self.port_forwarding_active = False
-            return True
-        except Exception as e:
-            print(f"Failed to remove port mapping: {e}")
-            return False
-
     def stop(self):
         """Stop the P2P client and clean up"""
-        # Clean up port forwarding if active
-        if self.port_forwarding_active:
-            self.remove_port_forwarding()
-
         self.running = False
 
         if self.connected:

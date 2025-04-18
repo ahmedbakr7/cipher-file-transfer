@@ -10,7 +10,7 @@ def display_menu():
     print("3. Share a file")
     print("4. Download a file")
     print("5. Refresh peer list")
-    print("6. Configure port forwarding")
+    print("6. Show connection details")
     print("7. Exit")
     print("============================")
     return input("Enter your choice (1-7): ")
@@ -95,67 +95,50 @@ def download_file(client):
     except Exception as e:
         print(f"Error: {e}")
 
-def configure_port_forwarding(client):
-    print("\n=== Port Forwarding Configuration ===")
-    print("1. Enable UPnP port forwarding")
-    print("2. Check port forwarding status")
-    print("3. Disable port forwarding")
-    print("4. Back to main menu")
+def show_connection_details(client):
+    """Display connection details for the peer"""
+    print("\n=== Connection Details ===")
+    print(f"Client ID: {client.client_id}")
+    print(f"Receiving on port: {client.receive_port}")
+    print(f"Sending from port: {client.send_port}")
+    print(f"Rendezvous server: {client.rendezvous_host}:{client.rendezvous_port}")
     
-    choice = input("Enter your choice (1-4): ")
+    # Try to get local IP address
+    try:
+        import socket
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        # Doesn't actually connect but helps get local IP
+        s.connect((client.rendezvous_host, client.rendezvous_port)) 
+        local_ip = s.getsockname()[0]
+        s.close()
+        print(f"Local IP address: {local_ip}")
+    except:
+        print("Could not determine local IP address")
     
-    if choice == '1':
-        port = input("Enter the port to forward (default is client's listening port): ") or str(client.port)
-        success = client.setup_port_forwarding(int(port))
-        if success:
-            print(f"Successfully set up port forwarding for port {port}")
-        else:
-            print("Failed to set up port forwarding. Your router may not support UPnP.")
-            print("You will need to manually configure port forwarding in your router settings.")
-    elif choice == '2':
-        status = client.check_port_forwarding_status()
-        if status['active']:
-            print(f"Port forwarding is active: External port {status['external_port']} -> Internal port {status['internal_port']}")
-            print(f"Your external IP address is: {status['external_ip']}")
-        else:
-            print("Port forwarding is not currently active")
-    elif choice == '3':
-        success = client.remove_port_forwarding()
-        if success:
-            print("Port forwarding has been disabled")
-        else:
-            print("Failed to disable port forwarding")
-    elif choice == '4':
-        return
-    else:
-        print("Invalid choice")
+    # Get peer count
+    peers = client.get_peer_list()
+    print(f"Connected peers: {len(peers)}")
 
 def main():
     parser = argparse.ArgumentParser(description="P2P File Sharing Application")
     parser.add_argument("-s", "--server", default="localhost", help="Rendezvous server address")
     parser.add_argument("-p", "--port", type=int, default=5000, help="Rendezvous server port")
-    parser.add_argument("--upnp", action="store_true", help="Enable UPnP port forwarding automatically")
-    parser.add_argument("--client-port", type=int, default=0, help="Specify client listening port (0 for random)")
+    parser.add_argument("--receive-port", type=int, default=0, help="Specify port for receiving connections (0 for random)")
+    parser.add_argument("--send-port", type=int, default=0, help="Specify port for sending connections (0 for random)")
+    parser.add_argument("--client-name", default=None, help="Specify a name for this client")
     args = parser.parse_args()
 
     print("Starting P2P File Sharing Application...")
-    client = P2PClient(rendezvous_host=args.server, rendezvous_port=args.port, client_port=args.client_port)
+    client = P2PClient(rendezvous_host=args.server, rendezvous_port=args.port, 
+                       receive_port=args.receive_port, send_port=args.send_port,
+                       client_name=args.client_name)
 
     try:
         client.start()
         print(f"Connected to rendezvous server at {args.server}:{args.port}")
         print(f"Your client ID is: {client.client_id}")
-        print(f"Your client is listening on port: {client.port}")
-        
-        # Set up UPnP port forwarding if requested
-        if args.upnp:
-            print("Setting up UPnP port forwarding...")
-            success = client.setup_port_forwarding()
-            if success:
-                print(f"Port forwarding configured successfully")
-            else:
-                print("Failed to set up port forwarding. Your router may not support UPnP.")
-                print("You can manually configure port forwarding from the menu.")
+        print(f"Receiving connections on port: {client.receive_port}")
+        print(f"Sending connections from port: {client.send_port}")
 
         while True:
             choice = display_menu()
@@ -173,7 +156,7 @@ def main():
                 peers = client.get_peer_list()
                 print(f"Found {len(peers)} peers.")
             elif choice == '6':
-                configure_port_forwarding(client)
+                show_connection_details(client)
             elif choice == '7':
                 print("Exiting...")
                 break
@@ -183,11 +166,6 @@ def main():
     except KeyboardInterrupt:
         print("\nShutdown requested...")
     finally:
-        # Make sure to clean up port forwarding when exiting
-        if hasattr(client, 'port_forwarding_active') and client.port_forwarding_active:
-            print("Removing port forwarding rules...")
-            client.remove_port_forwarding()
-        
         print("Stopping P2P client...")
         client.stop()
         print("Goodbye!")

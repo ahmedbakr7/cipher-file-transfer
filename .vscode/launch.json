@@ -1,0 +1,63 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "Debug P2P first Client",
+      "type": "python",
+      "request": "launch",
+      "program": "${workspaceFolder}/p2p_app.py",
+      "args": [
+        "--receive-port",
+        "5001",
+        "--send-port",
+        "5002",
+        "--client-name",
+        "debug_client_first"
+      ],
+      "console": "integratedTerminal",
+      "justMyCode": true,
+      "env": {
+        "P2P_SHARED_FOLDER": "shared_files_client1",
+        "P2P_DOWNLOADS_FOLDER": "downloads_client1"
+      }
+    },
+    {
+      "name": "Debug P2P second Client",
+      "type": "python",
+      "request": "launch",
+      "program": "${workspaceFolder}/p2p_app.py",
+      "args": [
+        "--receive-port",
+        "5003",
+        "--send-port",
+        "5004",
+        "--client-name",
+        "debug_client_second"
+      ],
+      "console": "integratedTerminal",
+      "justMyCode": true,
+      "env": {
+        "P2P_SHARED_FOLDER": "shared_files_client2",
+        "P2P_DOWNLOADS_FOLDER": "downloads_client2"
+      }
+    },
+    {
+      "name": "Debug Rendezvous Server",
+      "type": "python",
+      "request": "launch",
+      "program": "${workspaceFolder}/rendezvous_server.py",
+      "args": [],
+      "console": "integratedTerminal",
+      "justMyCode": true
+    },
+    {
+      "name": "Debug Two Clients",
+      "type": "python",
+      "request": "launch",
+      "program": "${workspaceFolder}/run_local_test.py",
+      "args": [],
+      "console": "integratedTerminal",
+      "justMyCode": true
+    }
+  ]
+}

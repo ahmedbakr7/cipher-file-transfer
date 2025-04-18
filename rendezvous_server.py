@@ -65,18 +65,20 @@ class RendezvousServer:
     def register_client(self, client_socket, request, address):
         """Register a new client with the server"""
         client_id = request.get('client_id')
-        listen_port = request.get('port')
+        receive_port = request.get('receive_port')
+        send_port = request.get('send_port')
         shared_files = request.get('files', [])
 
         with self.lock:
             self.clients[client_id] = {
                 'ip': address[0],
-                'port': listen_port,
+                'receive_port': receive_port,
+                'send_port': send_port,
                 'files': shared_files,
                 'last_seen': time.time()
             }
 
-        print(f"Registered client: {client_id} at {address[0]}:{listen_port}")
+        print(f"Registered client: {client_id} at {address[0]}:{receive_port}")
         response = {"status": "success", "message": "Registration successful"}
         client_socket.send(json.dumps(response).encode('utf-8'))
 
