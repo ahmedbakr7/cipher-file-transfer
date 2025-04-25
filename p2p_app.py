@@ -2,9 +2,14 @@ import argparse
 import os
 import time
 from peer import P2PClient
+from colored import Fore,Back,Style
 
-def display_menu():
-    print("\n===== P2P File Sharing =====")
+
+logged_in = False
+
+def display_menu(is_logged_in: bool):
+    """Show main menu. Swap Login / Logout based on login state."""
+    print(f"{Style.BOLD}{Fore.cyan}\n===== P2P File Sharing ====={Style.reset}")
     print("1. List my shared files")
     print("2. List available files from peers")
     print("3. Share a file")
@@ -12,16 +17,23 @@ def display_menu():
     print("5. Refresh peer list")
     print("6. Show connection details")
     print("7. Exit")
+    print("8. Retrieve Current Session Info")
+    if is_logged_in:
+        print("9. Logout")
+    else:
+        print("9. Login")
     print("============================")
-    return input("Enter your choice (1-7): ")
+    return input("Enter your choice (1-9): ")
+
+
 
 def list_shared_files(client):
     files = client.list_shared_files()
     if not files:
-        print("\nYou are not currently sharing any files.")
+        print(f"{Fore.yellow}\nYou are not currently sharing any files.")
         return
 
-    print("\nYour shared files:")
+    print(f'{Fore.blue}\nYour shared files:{Style.reset}')
     for idx, file_info in enumerate(files, 1):
         size_kb = file_info['size'] / 1024
         print(f"{idx}. {file_info['name']} ({size_kb:.1f} KB)")
@@ -29,54 +41,62 @@ def list_shared_files(client):
 def list_available_files(client):
     files = client.list_available_files()
     if not files:
-        print("\nNo files available from peers.")
+        print(f'{Style.BOLD}{Fore.red}\nNo files available from peers.{Style.reset}')
         return
 
     print("\nFiles available for download:")
     for idx, (file_name, sources) in enumerate(files.items(), 1):
         peers_count = len(sources)
-        # Get the size from the first source
+        
         size_kb = sources[0]['size'] / 1024
         print(f"{idx}. {file_name} ({size_kb:.1f} KB) - Available from {peers_count} peer(s)")
 
     return files
 
 def share_file(client):
-    file_path = input("\nEnter the full path of the file to share: ")
+    global logged_in
+    if not logged_in:
+        print(f"{Style.BOLD}{Fore.red}Please log in to share files.{Style.reset}")
+        return False
+    else:
+        file_path = input("\nEnter the full path of the file to share: ")
     if not os.path.exists(file_path):
-        print(f"File not found: {file_path}")
+        print(f"{Fore.red}File not found: {file_path}{Style.reset}")
         return
 
     success = client.share_file(file_path)
     if success:
-        print(f"File is now being shared.")
+        print(f'{Style.BOLD}{Fore.green}File is now being shared.{Style.reset}')
     else:
-        print("Failed to share the file.")
+        print(f"{Style.BOLD}{Fore.red}Failed to share the file.{Style.reset}")
 
 def download_file(client):
+    global logged_in
+    if not logged_in:
+        print(f"{Style.BOLD}{Fore.red}Please log in to download files.{Style.reset}")
+        return False
     available_files = list_available_files(client)
     if not available_files:
         return
-
     try:
         selection = int(input("\nEnter the number of the file to download: "))
         if selection < 1 or selection > len(available_files):
-            print("Invalid selection.")
+            print(f"{Style.BOLD}{Fore.red}Invalid selection.{Style.reset}")
             return
 
-        # Get the file name from the selection
+        
         file_name = list(available_files.keys())[selection - 1]
         sources = available_files[file_name]
 
         print(f"\nSources for {file_name}:")
         for idx, source in enumerate(sources, 1):
-            peer_id = source['peer_id'][:8] + "..."  # Show just part of the UUID
+            peer_id = source['peer_id'][:8] + "..."  
             size_kb = source['size'] / 1024
             print(f"{idx}. Peer {peer_id} ({size_kb:.1f} KB)")
 
         source_idx = int(input("\nSelect source (number): "))
         if source_idx < 1 or source_idx > len(sources):
-            print("Invalid source selection.")
+            print(f"{Style.BOLD}{Fore.red}Invalid source selection.{Style.reset}")
             return
 
         selected_source = sources[source_idx - 1]
@@ -103,11 +123,11 @@ def show_connection_details(client):
     print(f"Sending from port: {client.send_port}")
     print(f"Rendezvous server: {client.rendezvous_host}:{client.rendezvous_port}")
     
-    # Try to get local IP address
+    
     try:
         import socket
         s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        # Doesn't actually connect but helps get local IP
+        
         s.connect((client.rendezvous_host, client.rendezvous_port)) 
         local_ip = s.getsockname()[0]
         s.close()
@@ -115,11 +135,14 @@ def show_connection_details(client):
     except:
         print("Could not determine local IP address")
     
-    # Get peer count
+    
     peers = client.get_peer_list()
     print(f"Connected peers: {len(peers)}")
 
 def main():
+
+    global logged_in
+
     parser = argparse.ArgumentParser(description="P2P File Sharing Application")
     parser.add_argument("-s", "--server", default="localhost", help="Rendezvous server address")
     parser.add_argument("-p", "--port", type=int, default=5000, help="Rendezvous server port")
@@ -134,6 +157,28 @@ def main():
                        client_name=args.client_name)
 
     try:
+
+        while True:
+            print(f"{Style.BOLD}{Fore.cyan}\n=== Authentication ==={Style.reset}")
+            print("1. Register")
+            print("2. Login")
+            print("3. Exit")
+            auth_choice = input("Choose an option: ")
+
+            if auth_choice == '1':
+                if client.register():
+                    continue
+            elif auth_choice == '2':
+                if client.login():
+                    logged_in = True
+                    break
+            elif auth_choice == '3':
+                print(f"{Style.BOLD}{Fore.Green}Goodbye.{Style.reset}")
+                return
+            else:
+                print(f'{Style.BOLD}{Fore.red}Invalid choice.{Style.reset}')
+
+
         client.start()
         print(f"Connected to rendezvous server at {args.server}:{args.port}")
         print(f"Your client ID is: {client.client_id}")
@@ -141,7 +186,7 @@ def main():
         print(f"Sending connections from port: {client.send_port}")
 
         while True:
-            choice = display_menu()
+            choice = display_menu(logged_in)
 
             if choice == '1':
                 list_shared_files(client)
@@ -152,16 +197,29 @@ def main():
             elif choice == '4':
                 download_file(client)
             elif choice == '5':
-                print("Refreshing peer list...")
+                print(f"{Style.BOLD}{Fore.cyan}Refreshing peer list...{Style.reset}")
                 peers = client.get_peer_list()
-                print(f"Found {len(peers)} peers.")
+                print(f"{Fore.cyan}Found {len(peers)} peers.{Style.reset}")
             elif choice == '6':
                 show_connection_details(client)
             elif choice == '7':
-                print("Exiting...")
+                print(f"{Fore.cyan}Exiting...{Style.reset}")
                 break
+            elif choice == '8':
+                client.printSessionInfo()
+            elif choice == '9':
+                if logged_in:
+                    client.logout()
+                    logged_in = False  
+                    print(f"{Style.BOLD}{Fore.green}Logged out successfully.{Style.reset}")
+                else:
+                    if client.login():
+                        logged_in = True  
+                        client.start() 
+                        print(f"{Style.BOLD}{Fore.green}Reconnected as {client.client_id}{Style.reset}")
             else:
-                print("Invalid choice. Please try again.")
+                print(f'{Style.BOLD}{Fore.red}Invalid choice. Please try again.{Style.reset}')
+
 
     except KeyboardInterrupt:
         print("\nShutdown requested...")

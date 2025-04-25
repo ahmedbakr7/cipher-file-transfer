@@ -6,17 +6,22 @@ import uuid
 import time
 from pathlib import Path
 
+from utils import password_utils
+from colored import Fore,Back,Style
+
+USER_DB_PATH = "user_registry.json"
 
 class P2PClient:
     def __init__(self, rendezvous_host='localhost', rendezvous_port=5000, receive_port=0, send_port=0, client_name=None):
+        self.logged_in_user = None
         self.client_id = str(uuid.uuid4())
-        self.client_name = client_name or self.client_id[:8]  # Use shortened UUID if no name provided
+        self.client_name = client_name or self.client_id[:8]  
         self.rendezvous_host = rendezvous_host
         self.rendezvous_port = rendezvous_port
         self.receive_port = receive_port
         self.send_port = send_port
         
-        # Use environment variables if set, otherwise use default directories
+        
         self.shared_folder = os.environ.get('P2P_SHARED_FOLDER', 'shared_files')
         self.downloads_folder = os.environ.get('P2P_DOWNLOADS_FOLDER', 'downloads')
         
@@ -26,7 +31,7 @@ class P2PClient:
         self.running = False
         self.connected = False
         
-        # Create folders if they don't exist
+        
         os.makedirs(self.shared_folder, exist_ok=True)
         os.makedirs(self.downloads_folder, exist_ok=True)
         
@@ -47,13 +52,13 @@ class P2PClient:
         self.listen_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self.listen_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
 
-        # If receive_port is 0, the OS will assign a port
+        
         self.listen_socket.bind(('0.0.0.0', self.receive_port))
-        self.receive_port = self.listen_socket.getsockname()[1]  # Get the assigned port
+        self.receive_port = self.listen_socket.getsockname()[1]  
 
-        # If send_port is 0 or not specified, use a different port for outgoing connections
+        
         if self.send_port == 0:
-            # Try to get a port different from receive_port
+            
             temp_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             temp_socket.bind(('0.0.0.0', 0))
             self.send_port = temp_socket.getsockname()[1]
@@ -117,7 +122,7 @@ class P2PClient:
             sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             sock.connect((self.rendezvous_host, self.rendezvous_port))
 
-            # Register with the rendezvous server
+            
             register_data = {
                 'command': 'register',
                 'client_id': self.client_id,
@@ -138,7 +143,7 @@ class P2PClient:
 
             sock.close()
 
-            # Start a thread to periodically update the rendezvous server
+            
             update_thread = threading.Thread(target=self._update_rendezvous_periodically)
             update_thread.daemon = True
             update_thread.start()
@@ -196,29 +201,29 @@ class P2PClient:
             return {}
 
     def download_file(self, peer_id, file_name):
-        """Download a file from a specific peer"""
+
         if peer_id not in self.peers:
             print(f"Peer {peer_id} not found. Try refreshing the peer list.")
             return False
 
         peer_info = self.peers[peer_id]
         peer_ip = peer_info['ip']
-        peer_receive_port = peer_info['receive_port']  # Connect to peer's receiving port
+        peer_receive_port = peer_info['receive_port']  
 
         try:
-            # Bind to our send port for the outgoing connection
+            
             sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             sock.bind(('0.0.0.0', self.send_port))
             sock.connect((peer_ip, peer_receive_port))
 
-            # Send file request
+            
             request_data = {
                 'type': 'file_request',
                 'file_name': file_name
             }
             sock.send(json.dumps(request_data).encode('utf-8'))
 
-            # Receive the file size
+            
             size_data = sock.recv(1024).decode('utf-8')
             size_info = json.loads(size_data)
 
@@ -230,10 +235,10 @@ class P2PClient:
             file_size = size_info['size']
             print(f"Downloading {file_name} ({file_size} bytes)")
 
-            # Acknowledge receipt of file size
+            
             sock.send(b'ready')
 
-            # Create download path and open file
+            
             download_path = os.path.join(self.downloads_folder, file_name)
 
             with open(download_path, 'wb') as f:
@@ -246,11 +251,11 @@ class P2PClient:
                     f.write(chunk)
                     bytes_received += len(chunk)
 
-                    # Print progress
+                    
                     progress = (bytes_received / file_size) * 100
                     print(f"Download progress: {progress:.1f}%", end='\r')
 
-                print()  # New line after progress
+                print()  
 
             print(f"File downloaded successfully to {download_path}")
             sock.close()
@@ -273,10 +278,10 @@ class P2PClient:
         size_info = {'size': file_size}
         client_socket.send(json.dumps(size_info).encode('utf-8'))
 
-        # Wait for acknowledgment
+        
         client_socket.recv(1024)
 
-        # Send the file
+        
         with open(file_path, 'rb') as f:
             bytes_sent = 0
             while bytes_sent < file_size:
@@ -290,6 +295,8 @@ class P2PClient:
 
     def share_file(self, file_path):
         """Add a file to the shared folder"""
+
+
         if not os.path.exists(file_path):
             print(f"File {file_path} does not exist.")
             return False
@@ -297,7 +304,7 @@ class P2PClient:
         file_name = os.path.basename(file_path)
         dest_path = os.path.join(self.shared_folder, file_name)
 
-        # Copy the file to the shared folder
+        
         try:
             with open(file_path, 'rb') as src_file:
                 with open(dest_path, 'wb') as dst_file:
@@ -309,6 +316,7 @@ class P2PClient:
         except Exception as e:
             print(f"Error sharing file: {e}")
             return False
+
 
     def list_shared_files(self):
         """List all files currently being shared"""
@@ -359,3 +367,67 @@ class P2PClient:
             self.listen_socket.close()
 
         print("P2P client stopped")
+
+    def _load_users(self):
+        if not os.path.exists(USER_DB_PATH):
+            return {}
+        with open(USER_DB_PATH, 'r') as f:
+            return json.load(f)
+
+    def _save_users(self, users):
+        with open(USER_DB_PATH, 'w') as f:
+            json.dump(users, f, indent=2)
+
+    def register(self):
+        users = self._load_users()
+        username = input("Choose a username: ").strip()
+        if username in users:
+            print(f"{Style.BOLD}{Fore.red}Username already exists. Try Again.{Style.reset}")
+            return False
+
+        password = input("Choose a password: ").strip()
+        hashed, salt = password_utils.hash_password(password)
+        users[username] = {'hash': hashed, 'salt': salt}
+        self._save_users(users)
+        print(f"{Style.BOLD}{Fore.green}Registration successful.{Style.reset}")
+        return True
+
+    def login(self):
+        if self.is_logged_in():
+            print(f"{Fore.magenta}Already logged in as '{self.logged_in_user}'. Please logout first.{Style.reset}")
+            return False
+
+        users = self._load_users()
+        username = input("Username: ").strip()
+        password = input("Password: ").strip()
+
+        if username not in users:
+            print("User not found.")
+            return False
+
+        stored_hash = users[username]['hash']
+        stored_salt = users[username]['salt']
+        if password_utils.verify_password(password, stored_hash, stored_salt):
+            self.logged_in_user = username
+            print(f"Logged in as {username}")
+            return True
+        else:
+            print("Invalid password.")
+            return False
+        
+    def is_logged_in(self):
+        return self.logged_in_user is not None
+
+    def logout(self):
+        if self.is_logged_in():
+            print(f"{Style.BOLD}{Fore.red}User '{self.logged_in_user}' has been logged out.{Style.reset}")
+            self.logged_in_user = None
+        else:
+            print("No user is currently logged in.")
+
+    def printSessionInfo(self):
+        if self.is_logged_in():
+            print(f"{Style.BOLD}{Fore.magenta}Currently logged in as: {self.logged_in_user}{Style.reset}")
+        else:
+            print("Not logged in.")
+

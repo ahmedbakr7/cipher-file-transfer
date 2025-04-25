@@ -8,7 +8,7 @@ class RendezvousServer:
         self.host = host
         self.port = port
         self.server_socket = None
-        self.clients = {}  # Dictionary to store connected clients {client_id: (ip, port, files)}
+        self.clients = {}  
         self.lock = threading.Lock()
 
     def start(self):
@@ -105,7 +105,7 @@ class RendezvousServer:
     def send_peers_list(self, client_socket):
         """Send list of all connected peers to the requesting client"""
         with self.lock:
-            # Filter out clients that haven't been seen in 5 minutes
+            
             current_time = time.time()
             active_clients = {
                 client_id: client_data
