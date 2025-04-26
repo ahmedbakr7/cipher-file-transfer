@@ -58,5 +58,9 @@
   "j": {
     "hash": "16798bd2e9f3e8fe850f07491ff0d582f60d64e4cd3709712184ba5a4239c651",
     "salt": "94d6f264fac325a193954d3a17dc63b7"
+  },
+  "Lily": {
+    "hash": "8d1ae829b3433bdda77c3c8e3386b56a3dad48ae093e2bb93773d09ff8d6ea87",
+    "salt": "47d735fe2a51a75f23f5e8bf760625a2"
   }
 }

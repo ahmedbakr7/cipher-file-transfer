@@ -84,7 +84,7 @@ class P2PClient:
                 client_handler.start()
             except Exception as e:
                 if self.running:
-                    print(f"Error accepting connection: {e}")
+                    print(f"{Style.BOLD}{Fore.red}Error accepting connection: {e}{Style.reset}")
 
     def _handle_peer_connection(self, client_socket):
         """Handle an incoming connection from another peer"""
@@ -409,10 +409,10 @@ class P2PClient:
         stored_salt = users[username]['salt']
         if password_utils.verify_password(password, stored_hash, stored_salt):
             self.logged_in_user = username
-            print(f"Logged in as {username}")
+            print(f"{Style.BOLD}{Fore.green}Logged in as {username}{Style.reset}")
             return True
         else:
-            print("Invalid password.")
+            print(f"{Style.BOLD}{Fore.red}Invalid password.{Style.reset}")
             return False
         
     def is_logged_in(self):
