@@ -1,13 +1,15 @@
-import socket
-import threading
 import json
 import os
-import uuid
+import socket
+import threading
 import time
-from pathlib import Path
+import uuid
 
+from utils import crypto_utils
 from utils import password_utils
-from colored import Fore,Back,Style
+
+FILE_HASHES_PATH = 'shared_files/file_hashes.json'
+from colored import Fore, Style
 
 USER_DB_PATH = "user_registry.json"
 
@@ -103,7 +105,9 @@ class P2PClient:
 
     def _scan_shared_folder(self):
         """Scan the shared folder for files to share"""
+        previous_count = len(self.shared_files)
         self.shared_files = []
+
         if os.path.exists(self.shared_folder):
             for file in os.listdir(self.shared_folder):
                 file_path = os.path.join(self.shared_folder, file)
@@ -114,7 +118,9 @@ class P2PClient:
                         'size': file_size
                     })
 
-        print(f"Sharing {len(self.shared_files)} files")
+        # Only print if the number of files changed
+        if len(self.shared_files) != previous_count:
+            print(f"Sharing {len(self.shared_files)} files")
 
     def _connect_to_rendezvous(self):
         """Connect to the rendezvous server and register this peer"""
@@ -265,37 +271,8 @@ class P2PClient:
             print(f"Error downloading file: {e}")
             return False
 
-    def _send_file(self, client_socket, file_name):
-        """Send a file to a peer who requested it"""
-        file_path = os.path.join(self.shared_folder, file_name)
-
-        if not os.path.exists(file_path):
-            error_response = {'error': 'File not found'}
-            client_socket.send(json.dumps(error_response).encode('utf-8'))
-            return
-
-        file_size = os.path.getsize(file_path)
-        size_info = {'size': file_size}
-        client_socket.send(json.dumps(size_info).encode('utf-8'))
-
-        
-        client_socket.recv(1024)
-
-        
-        with open(file_path, 'rb') as f:
-            bytes_sent = 0
-            while bytes_sent < file_size:
-                chunk = f.read(4096)
-                if not chunk:
-                    break
-                client_socket.send(chunk)
-                bytes_sent += len(chunk)
-
-        print(f"Sent file {file_name} ({file_size} bytes)")
-
     def share_file(self, file_path):
-        """Add a file to the shared folder"""
-
+        """Encrypt a file and move it to the shared folder"""
 
         if not os.path.exists(file_path):
             print(f"File {file_path} does not exist.")
@@ -304,19 +281,37 @@ class P2PClient:
         file_name = os.path.basename(file_path)
         dest_path = os.path.join(self.shared_folder, file_name)
 
-        
         try:
-            with open(file_path, 'rb') as src_file:
-                with open(dest_path, 'wb') as dst_file:
-                    dst_file.write(src_file.read())
+            # Read original content
+            with open(file_path, 'rb') as f:
+                original_content = f.read()
 
-            print(f"File {file_name} added to shared folder")
+            # Encrypt
+            symmetric_key = b'SECRET_KEY_MUST_BE_32BYTES_LONG!!'[:32]
+            encrypted_content = crypto_utils.encrypt_file_content(original_content, symmetric_key)
+
+            # Save to shared folder
+            with open(dest_path, 'wb') as f:
+                f.write(encrypted_content)
+
+            # Save hash
+            file_hash = crypto_utils.hash_file_content(original_content)
+            if os.path.exists(FILE_HASHES_PATH):
+                with open(FILE_HASHES_PATH, 'r') as fh:
+                    hashes = json.load(fh)
+            else:
+                hashes = {}
+            hashes[file_name] = file_hash
+            with open(FILE_HASHES_PATH, 'w') as fh:
+                json.dump(hashes, fh)
+
+            print(f"Encrypted and shared file: {file_name}")
             self._scan_shared_folder()
             return True
+
         except Exception as e:
             print(f"Error sharing file: {e}")
             return False
-
 
     def list_shared_files(self):
         """List all files currently being shared"""
@@ -431,3 +426,51 @@ class P2PClient:
         else:
             print("Not logged in.")
 
+
+    def _send_file(self, client_socket, file_name):
+        """Send an encrypted file to the requesting peer after verifying integrity"""
+        try:
+            file_path = os.path.join(self.shared_folder, file_name)
+            symmetric_key = b'SECRET_KEY_MUST_BE_32BYTES_LONG!!'[:32]
+
+            if not os.path.exists(file_path):
+                error_msg = json.dumps({'error': 'File not found'}).encode('utf-8')
+                client_socket.send(error_msg)
+                return
+
+            with open(file_path, 'rb') as f:
+                encrypted_content = f.read()
+                file_data = crypto_utils.decrypt_file_content(encrypted_content, symmetric_key)
+
+            decrypted_hash = crypto_utils.hash_file_content(file_data)
+            with open(FILE_HASHES_PATH, 'r') as fh:
+                hashes = json.load(fh)
+            expected_hash = hashes.get(file_name)
+
+            if decrypted_hash != expected_hash:
+                print(f"[!] Integrity check failed for {file_name}")
+                error_msg = json.dumps({'error': 'File integrity verification failed'}).encode('utf-8')
+                client_socket.send(error_msg)
+                return
+
+            # Send size first
+            file_size = len(file_data)
+            size_info = json.dumps({'size': file_size}).encode('utf-8')
+            client_socket.send(size_info)
+
+            # Wait for peer to be ready
+            ready = client_socket.recv(1024)
+            if ready != b'ready':
+                return
+
+            # Send file in chunks
+            bytes_sent = 0
+            while bytes_sent < file_size:
+                chunk = file_data[bytes_sent:bytes_sent+4096]
+                client_socket.send(chunk)
+                bytes_sent += len(chunk)
+
+            print(f"Sent file {file_name} ({file_size} bytes)")
+
+        except Exception as e:
+            print(f"Error sending file {file_name}: {e}")

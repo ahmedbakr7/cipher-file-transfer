@@ -1,9 +1,7 @@
 import argparse
 import os
-import time
 from peer import P2PClient
-from colored import Fore,Back,Style
-
+from colored import Fore,Style
 
 logged_in = False
 
@@ -167,7 +165,10 @@ def main():
 
             if auth_choice == '1':
                 if client.register():
-                    continue
+                    print("Registration successful. Proceeding to login...")
+                    if client.login():
+                        logged_in = True
+                        break
             elif auth_choice == '2':
                 if client.login():
                     logged_in = True
@@ -214,7 +215,7 @@ def main():
                     print(f"{Style.BOLD}{Fore.green}Logged out successfully.{Style.reset}")
                 else:
                     if client.login():
-                        logged_in = True  
+                        logged_in = True
                         client.start() 
                         print(f"{Style.BOLD}{Fore.green}Reconnected as {client.client_id}{Style.reset}")
             else:

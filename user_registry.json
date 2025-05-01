@@ -62,5 +62,17 @@
   "Lily": {
     "hash": "8d1ae829b3433bdda77c3c8e3386b56a3dad48ae093e2bb93773d09ff8d6ea87",
     "salt": "47d735fe2a51a75f23f5e8bf760625a2"
+  },
+  "yassin": {
+    "hash": "e2528140e781f67efe286586d44d45904360745b209ffc48b98031a6c219b7af",
+    "salt": "d5c8d9e83193a1671756d49e22338697"
+  },
+  "omar": {
+    "hash": "706c6aa3557ef90d43995074fd329b5ded178fe36c89d1ff88576581afc0af15",
+    "salt": "c7bda7a4cdf29a4c9ef8fe7dc34211c4"
+  },
+  "ayman": {
+    "hash": "a6f16b5a505e6fb15fe49261bbb7c20e72470a5ae001062344b174a3a1475f07",
+    "salt": "da0b78b8be8edf4cfe54411bf32a20d3"
   }
 }
