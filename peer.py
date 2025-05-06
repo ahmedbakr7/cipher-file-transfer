@@ -8,13 +8,16 @@ import uuid
 from utils import crypto_utils
 from utils import password_utils
 
-FILE_HASHES_PATH = 'shared_files/file_hashes.json'
+# FILE_HASHES_PATH = 'shared_files/file_hashes.json'
+# FILE_METADATA_PATH = 'shared_files/file_metadata.json' # New metadata file
+
 from colored import Fore, Style
+
 
 USER_DB_PATH = "user_registry.json"
 
 class P2PClient:
-    def __init__(self, rendezvous_host='localhost', rendezvous_port=5000, receive_port=0, send_port=0, client_name=None):
+    def __init__(self, rendezvous_host='localhost', rendezvous_port=5050, receive_port=0, send_port=0, client_name=None):
         self.logged_in_user = None
         self.client_id = str(uuid.uuid4())
         self.client_name = client_name or self.client_id[:8]  
@@ -26,6 +29,9 @@ class P2PClient:
         
         self.shared_folder = os.environ.get('P2P_SHARED_FOLDER', 'shared_files')
         self.downloads_folder = os.environ.get('P2P_DOWNLOADS_FOLDER', 'downloads')
+
+        self.FILE_METADATA_PATH = os.path.join(self.shared_folder, 'file_metadata.json')
+
         
         self.shared_files = []
         self.peers = {}
@@ -40,6 +46,25 @@ class P2PClient:
         print(f"Client '{self.client_name}' initialized")
         print(f"Using shared folder: {self.shared_folder}")
         print(f"Using downloads folder: {self.downloads_folder}")
+        print(f"Using metadata file: {self.FILE_METADATA_PATH}")
+
+    def _load_file_metadata(self):
+        if os.path.exists(self.FILE_METADATA_PATH):
+            try:
+                with open(self.FILE_METADATA_PATH, 'r') as f:
+                    return json.load(f)
+            except json.JSONDecodeError:
+                print(f"{Fore.YELLOW}Warning: Metadata file '{self.FILE_METADATA_PATH}' is corrupted. Starting with empty metadata.{Style.RESET}")
+                return {}
+        return {}
+
+    def _save_file_metadata(self, metadata):
+        try:
+            with open(self.FILE_METADATA_PATH, 'w') as f:
+                json.dump(metadata, f, indent=2)
+        except IOError as e:
+            print(f"{Style.BOLD}{Fore.RED}Error saving metadata file: {e}{Style.RESET}")
+
 
     def start(self):
         """Start the P2P client by setting up listening socket and connecting to rendezvous"""
@@ -206,111 +231,196 @@ class P2PClient:
             print(f"Error retrieving peer list: {e}")
             return {}
 
+
     def download_file(self, peer_id, file_name):
+        if not self.is_logged_in():
+            print(f"{Style.BOLD}{Fore.RED}Please log in to download files.{Style.RESET}")
+            return False
 
         if peer_id not in self.peers:
-            print(f"Peer {peer_id} not found. Try refreshing the peer list.")
+            print(f"{Fore.YELLOW}Peer {peer_id} not found. Try refreshing the peer list.{Style.RESET}")
             return False
 
         peer_info = self.peers[peer_id]
         peer_ip = peer_info['ip']
-        peer_receive_port = peer_info['receive_port']  
+        peer_receive_port = peer_info['receive_port'] # This is the port the other peer is listening on
 
+        sock = None # Initialize sock to None
         try:
-            
             sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            sock.bind(('0.0.0.0', self.send_port))
+            # Bind to the client's specific sending port if it's set and not 0. OS assigns otherwise.
+            if self.send_port != 0:
+                 sock.bind(('0.0.0.0', self.send_port)) # Use configured send_port
             sock.connect((peer_ip, peer_receive_port))
 
-            
-            request_data = {
-                'type': 'file_request',
-                'file_name': file_name
-            }
+            # Request the file
+            request_data = {'type': 'file_request', 'file_name': file_name}
             sock.send(json.dumps(request_data).encode('utf-8'))
+            print(f"Requesting '{file_name}' from peer {peer_id[:8]}...")
 
+            # 1. Receive metadata: encrypted_size, original_file_hash, file_key_hex
+            meta_response_raw = sock.recv(2048) # Increased buffer for metadata
+            if not meta_response_raw:
+                print(f"{Fore.RED}Error: No metadata received from peer.{Style.RESET}")
+                if sock: sock.close()
+                return False
             
-            size_data = sock.recv(1024).decode('utf-8')
-            size_info = json.loads(size_data)
-
-            if 'error' in size_info:
-                print(f"Error from peer: {size_info['error']}")
-                sock.close()
+            try:
+                meta_payload_from_sender = json.loads(meta_response_raw.decode('utf-8'))
+            except json.JSONDecodeError:
+                print(f"{Fore.RED}Error: Received invalid JSON metadata from peer: {meta_response_raw.decode('utf-8', errors='ignore')}{Style.RESET}")
+                if sock: sock.close()
                 return False
 
-            file_size = size_info['size']
-            print(f"Downloading {file_name} ({file_size} bytes)")
+            if 'error' in meta_payload_from_sender:
+                print(f"{Fore.RED}Error from sending peer: {meta_payload_from_sender['error']}{Style.RESET}")
+                if sock: sock.close()
+                return False
 
+            encrypted_size = meta_payload_from_sender.get('size')
+            original_hash_from_sender = meta_payload_from_sender.get('hash')
+            file_key_hex_from_sender = meta_payload_from_sender.get('key')
+
+            if not all([isinstance(encrypted_size, int), original_hash_from_sender, file_key_hex_from_sender]):
+                print(f"{Fore.RED}Error: Incomplete or malformed metadata received: {meta_payload_from_sender}{Style.RESET}")
+                if sock: sock.close()
+                return False
             
+            print(f"Received metadata: Enc_size={encrypted_size}, Orig_hash={original_hash_from_sender[:8]}..., Key_hex={file_key_hex_from_sender[:8]}...")
+
+            # 2. Decode the file_key from hex
+            try:
+                file_key_for_decryption = bytes.fromhex(file_key_hex_from_sender)
+            except ValueError:
+                print(f"{Fore.RED}Error: Invalid key format received (not hex).{Style.RESET}")
+                if sock: sock.close()
+                return False
+
+            # 3. Send 'ready' signal to sender
             sock.send(b'ready')
 
-            
-            download_path = os.path.join(self.downloads_folder, file_name)
+            # 4. Receive the ENCRYPTED file content
+            received_encrypted_chunks = []
+            bytes_received = 0
+            print(f"Downloading ENCRYPTED file '{file_name}' ({encrypted_size} bytes)...")
+            while bytes_received < encrypted_size:
+                chunk_size_to_receive = min(4096, encrypted_size - bytes_received)
+                chunk = sock.recv(chunk_size_to_receive)
+                if not chunk:
+                    print(f"{Fore.RED}\nError: Connection lost prematurely during download of '{file_name}'. Received {bytes_received}/{encrypted_size} bytes.{Style.RESET}")
+                    if sock: sock.close()
+                    return False
+                received_encrypted_chunks.append(chunk)
+                bytes_received += len(chunk)
+                progress = (bytes_received / encrypted_size) * 100
+                print(f"Download progress: {progress:.1f}%", end='\r')
+            print("\nENCRYPTED download complete.                                  ") # Spaces to clear progress
 
-            with open(download_path, 'wb') as f:
-                bytes_received = 0
+            full_encrypted_content = b''.join(received_encrypted_chunks)
+            if len(full_encrypted_content) != encrypted_size:
+                 print(f"{Fore.RED}Error: Downloaded encrypted size mismatch. Expected {encrypted_size}, got {len(full_encrypted_content)}{Style.RESET}")
+                 if sock: sock.close()
+                 return False
 
-                while bytes_received < file_size:
-                    chunk = sock.recv(min(4096, file_size - bytes_received))
-                    if not chunk:
-                        break
-                    f.write(chunk)
-                    bytes_received += len(chunk)
+            # 5. Decrypt the received content
+            print(f"Decrypting '{file_name}'...")
+            try:
+                decrypted_content = crypto_utils.decrypt_file_content(full_encrypted_content, file_key_for_decryption)
+            except Exception as e: 
+                print(f"{Style.BOLD}{Fore.RED}Error decrypting file '{file_name}': {e}{Style.RESET}")
+                print(f"  Key used (first 8 bytes hex): {file_key_for_decryption[:8].hex()}")
+                print(f"  IV (first 16 bytes of encrypted data hex): {full_encrypted_content[:16].hex()}")
+                if sock: sock.close()
+                return False
+            print("Decryption successful.")
 
-                    
-                    progress = (bytes_received / file_size) * 100
-                    print(f"Download progress: {progress:.1f}%", end='\r')
+            # 6. Calculate the hash of the (now decrypted) content
+            calculated_hash_of_decrypted_file = crypto_utils.hash_file_content(decrypted_content)
+            print(f"Calculated hash of decrypted content: {calculated_hash_of_decrypted_file[:8]}...")
 
-                print()  
+            # 7. Compare hashes for integrity
+            if calculated_hash_of_decrypted_file == original_hash_from_sender:
+                print(f"{Fore.GREEN}Integrity check PASSED for '{file_name}'.{Style.RESET}")
+                
+                download_path = os.path.join(self.downloads_folder, file_name)
+                with open(download_path, 'wb') as f:
+                    f.write(decrypted_content)
+                print(f"{Fore.GREEN}File '{file_name}' saved successfully to '{download_path}'.{Style.RESET}")
+                return True
+            else:
+                print(f"{Style.BOLD}{Fore.RED}CRITICAL: Integrity check FAILED for '{file_name}'.{Style.RESET}")
+                print(f"  Expected hash from sender: {original_hash_from_sender}")
+                print(f"  Calculated hash of download: {calculated_hash_of_decrypted_file}")
+                print(f"{Fore.YELLOW}The downloaded file is corrupted or has been tampered with. Discarding.{Style.RESET}")
+                return False
 
-            print(f"File downloaded successfully to {download_path}")
-            sock.close()
-            return True
-
+        except socket.timeout:
+            print(f"{Fore.RED}Error: Connection to peer {peer_id[:8]} timed out.{Style.RESET}")
+            return False
+        except ConnectionRefusedError:
+            print(f"{Fore.RED}Error: Connection to peer {peer_id[:8]} ({peer_ip}:{peer_receive_port}) was refused.{Style.RESET}")
+            return False
         except Exception as e:
-            print(f"Error downloading file: {e}")
+            print(f"{Style.BOLD}{Fore.RED}An unexpected error occurred while downloading '{file_name}': {e}{Style.RESET}")
+            import traceback
+            traceback.print_exc()
+            return False
+        finally:
+            if sock:
+                sock.close()
+    def share_file(self, file_path):
+        if not self.is_logged_in():
+            print(f"{Style.BOLD}{Fore.RED}Please log in to share files.{Style.RESET}")
             return False
 
-    def share_file(self, file_path):
-        """Encrypt a file and move it to the shared folder"""
-
         if not os.path.exists(file_path):
-            print(f"File {file_path} does not exist.")
+            print(f"{Fore.RED}File {file_path} does not exist.{Style.RESET}")
             return False
 
         file_name = os.path.basename(file_path)
+        # This dest_path will store the ENCRYPTED file
         dest_path = os.path.join(self.shared_folder, file_name)
 
         try:
-            # Read original content
             with open(file_path, 'rb') as f:
                 original_content = f.read()
 
-            # Encrypt
-            symmetric_key = b'SECRET_KEY_MUST_BE_32BYTES_LONG!!'[:32]
-            encrypted_content = crypto_utils.encrypt_file_content(original_content, symmetric_key)
+            # 1. Generate a unique symmetric key for this file
+            file_key = crypto_utils.generate_symmetric_key() # From your crypto_utils
 
-            # Save to shared folder
+            # 2. Encrypt the file content with this unique key
+            encrypted_content = crypto_utils.encrypt_file_content(original_content, file_key)
+
+            # 3. Store the encrypted content in the shared_folder
             with open(dest_path, 'wb') as f:
                 f.write(encrypted_content)
+            print(f"{Fore.GREEN}File '{file_name}' encrypted and saved to shared folder.{Style.RESET}")
 
-            # Save hash
-            file_hash = crypto_utils.hash_file_content(original_content)
-            if os.path.exists(FILE_HASHES_PATH):
-                with open(FILE_HASHES_PATH, 'r') as fh:
-                    hashes = json.load(fh)
-            else:
-                hashes = {}
-            hashes[file_name] = file_hash
-            with open(FILE_HASHES_PATH, 'w') as fh:
-                json.dump(hashes, fh)
+            # 4. Calculate the hash of the original, unencrypted file content
+            original_hash = crypto_utils.hash_file_content(original_content)
 
-            print(f"Encrypted and shared file: {file_name}")
-            self._scan_shared_folder()
+            # 5. Store file_hash and file_key (hex-encoded) in metadata
+            metadata = self._load_file_metadata()
+            metadata[file_name] = {
+                'hash': original_hash,    # Hash of the original content
+                'key': file_key.hex()     # Symmetric key for this file, hex-encoded
+            }
+            self._save_file_metadata(metadata)
+            print(f"Metadata (hash and key) for '{file_name}' saved.")
+
+            self._scan_shared_folder() # This updates self.shared_files (name, ENCRYPTED_size)
+            # You might want to trigger an update to the rendezvous server here if it's not periodic
+            # self._connect_to_rendezvous() # Or a more specific update function
+
             return True
 
         except Exception as e:
-            print(f"Error sharing file: {e}")
+            print(f"{Style.BOLD}{Fore.RED}Error sharing file '{file_name}': {e}{Style.RESET}")
+            # Consider cleanup if error occurs mid-process
+            if os.path.exists(dest_path) and 'encrypted_content' not in locals():
+                 # If dest_path was created but encryption failed before writing
+                 try: os.remove(dest_path)
+                 except: pass
             return False
 
     def list_shared_files(self):
@@ -428,49 +538,69 @@ class P2PClient:
 
 
     def _send_file(self, client_socket, file_name):
-        """Send an encrypted file to the requesting peer after verifying integrity"""
         try:
-            file_path = os.path.join(self.shared_folder, file_name)
-            symmetric_key = b'SECRET_KEY_MUST_BE_32BYTES_LONG!!'[:32]
+            encrypted_file_path = os.path.join(self.shared_folder, file_name)
 
-            if not os.path.exists(file_path):
-                error_msg = json.dumps({'error': 'File not found'}).encode('utf-8')
+            if not os.path.exists(encrypted_file_path):
+                error_msg = json.dumps({'error': 'File not found on sender side.'}).encode('utf-8')
                 client_socket.send(error_msg)
+                print(f"{Fore.RED}Error: Requested file '{file_name}' not found in shared folder for sending.{Style.RESET}")
                 return
 
-            with open(file_path, 'rb') as f:
-                encrypted_content = f.read()
-                file_data = crypto_utils.decrypt_file_content(encrypted_content, symmetric_key)
+            # 1. Lookup file_name in file_metadata.json to get its original hash and file_key
+            all_metadata = self._load_file_metadata()
+            file_meta = all_metadata.get(file_name)
 
-            decrypted_hash = crypto_utils.hash_file_content(file_data)
-            with open(FILE_HASHES_PATH, 'r') as fh:
-                hashes = json.load(fh)
-            expected_hash = hashes.get(file_name)
-
-            if decrypted_hash != expected_hash:
-                print(f"[!] Integrity check failed for {file_name}")
-                error_msg = json.dumps({'error': 'File integrity verification failed'}).encode('utf-8')
+            if not file_meta:
+                error_msg = json.dumps({'error': 'File metadata not found on sender side.'}).encode('utf-8')
                 client_socket.send(error_msg)
+                print(f"{Fore.RED}Error: Metadata for '{file_name}' not found.{Style.RESET}")
                 return
 
-            # Send size first
-            file_size = len(file_data)
-            size_info = json.dumps({'size': file_size}).encode('utf-8')
-            client_socket.send(size_info)
+            original_content_hash = file_meta['hash']
+            file_key_hex = file_meta['key'] # This is the hex-encoded symmetric key
 
-            # Wait for peer to be ready
-            ready = client_socket.recv(1024)
-            if ready != b'ready':
+            # 2. Read the already ENCRYPTED content from shared_folder
+            with open(encrypted_file_path, 'rb') as f:
+                encrypted_content_to_send = f.read()
+
+            encrypted_size = len(encrypted_content_to_send)
+
+            # 3. Protocol Change: Send metadata first
+            # (encrypted_size, original_content_hash, file_key_hex)
+            meta_payload_for_download = {
+                'size': encrypted_size,              # Size of the ENCRYPTED file
+                'hash': original_content_hash,       # Hash of the ORIGINAL, unencrypted file
+                'key': file_key_hex                  # Hex-encoded symmetric key for this file
+            }
+            client_socket.send(json.dumps(meta_payload_for_download).encode('utf-8'))
+            print(f"Sent metadata for '{file_name}': enc_size={encrypted_size}, orig_hash={original_content_hash[:8]}..., key={file_key_hex[:8]}...")
+
+            # Wait for 'ready' signal from the downloader
+            ready_signal = client_socket.recv(1024)
+            if ready_signal != b'ready':
+                print(f"{Fore.YELLOW}Downloader not ready for '{file_name}'. Aborting send.{Style.RESET}")
                 return
 
-            # Send file in chunks
+            # 4. Send the ENCRYPTED file content in chunks
             bytes_sent = 0
-            while bytes_sent < file_size:
-                chunk = file_data[bytes_sent:bytes_sent+4096]
+            buffer_size = 4096
+            while bytes_sent < encrypted_size:
+                chunk = encrypted_content_to_send[bytes_sent : bytes_sent + buffer_size]
                 client_socket.send(chunk)
                 bytes_sent += len(chunk)
+            
+            print(f"{Fore.GREEN}Sent ENCRYPTED file '{file_name}' ({encrypted_size} bytes) successfully.{Style.RESET}")
 
-            print(f"Sent file {file_name} ({file_size} bytes)")
-
+        except ConnectionResetError:
+            print(f"{Fore.RED}Connection reset by peer while sending '{file_name}'.{Style.RESET}")
+        except BrokenPipeError:
+            print(f"{Fore.RED}Broken pipe while sending '{file_name}'. Peer may have disconnected.{Style.RESET}")
         except Exception as e:
-            print(f"Error sending file {file_name}: {e}")
+            print(f"{Style.BOLD}{Fore.RED}Error sending file '{file_name}': {e}{Style.RESET}")
+            # Attempt to inform the client if possible
+            try:
+                error_msg = json.dumps({'error': f'Server error during send: {str(e)}'}).encode('utf-8')
+                client_socket.send(error_msg)
+            except:
+                pass # Socket might already be closed
