@@ -14,5 +14,14 @@
   "b": {
     "hash": "93ab0153bb43dfa6389c8bbb4670f3504f6d2e834f9150951cee9909ad94425a",
     "salt": "962c8ba6fa727346a38024bd9fadca51"
+  },
+  "emad": {
+    "hash": "$argon2id$v=19$m=65536,t=3,p=2$GLqUQLdKbqo6+iFwoNlRdQ$2sgpcppD8fmxo1imdJwUV87AyUd45vHZeK69FlBx7LM"
+  },
+  "rrr": {
+    "hash": "$argon2id$v=19$m=65536,t=3,p=2$sijtosZlos4i4iopcoQyMw$rntwLbkL5vXIXpLXRK9+u8epZPU+1iB7xF/YmjcopL4"
+  },
+  "e": {
+    "hash": "$argon2id$v=19$m=65536,t=3,p=2$6h8B40dJ0DbU6Ew5PfjZbg$Wofbcbx7lHU1p0m7HIGKXx+H/qM37GGnENvNcfnin4s"
   }
 }

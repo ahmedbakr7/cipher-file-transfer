@@ -5,10 +5,10 @@ from cryptography.hazmat.backends import default_backend
 import os
 import base64
 
-BLOCK_SIZE = 128  # AES block size in bits
+BLOCK_SIZE = 128  
 
 def generate_symmetric_key():
-    return os.urandom(32)  # AES-256
+    return os.urandom(32)  
 
 def encrypt_file_content(content: bytes, key: bytes) -> bytes:
     iv = os.urandom(16)
@@ -17,7 +17,7 @@ def encrypt_file_content(content: bytes, key: bytes) -> bytes:
     padder = padding.PKCS7(BLOCK_SIZE).padder()
     padded_data = padder.update(content) + padder.finalize()
     encrypted_data = encryptor.update(padded_data) + encryptor.finalize()
-    return iv + encrypted_data  # Prepend IV for use in decryption
+    return iv + encrypted_data  
 
 def decrypt_file_content(encrypted_content: bytes, key: bytes) -> bytes:
     iv = encrypted_content[:16]

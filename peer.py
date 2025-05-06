@@ -8,8 +8,8 @@ import uuid
 from utils import crypto_utils
 from utils import password_utils
 
-# FILE_HASHES_PATH = 'shared_files/file_hashes.json'
-# FILE_METADATA_PATH = 'shared_files/file_metadata.json' # New metadata file
+
+
 
 from colored import Fore, Style
 
@@ -143,7 +143,7 @@ class P2PClient:
                         'size': file_size
                     })
 
-        # Only print if the number of files changed
+        
         if len(self.shared_files) != previous_count:
             print(f"Sharing {len(self.shared_files)} files")
 
@@ -243,23 +243,23 @@ class P2PClient:
 
         peer_info = self.peers[peer_id]
         peer_ip = peer_info['ip']
-        peer_receive_port = peer_info['receive_port'] # This is the port the other peer is listening on
+        peer_receive_port = peer_info['receive_port'] 
 
-        sock = None # Initialize sock to None
+        sock = None 
         try:
             sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            # Bind to the client's specific sending port if it's set and not 0. OS assigns otherwise.
+            
             if self.send_port != 0:
-                 sock.bind(('0.0.0.0', self.send_port)) # Use configured send_port
+                 sock.bind(('0.0.0.0', self.send_port)) 
             sock.connect((peer_ip, peer_receive_port))
 
-            # Request the file
+            
             request_data = {'type': 'file_request', 'file_name': file_name}
             sock.send(json.dumps(request_data).encode('utf-8'))
             print(f"Requesting '{file_name}' from peer {peer_id[:8]}...")
 
-            # 1. Receive metadata: encrypted_size, original_file_hash, file_key_hex
-            meta_response_raw = sock.recv(2048) # Increased buffer for metadata
+            
+            meta_response_raw = sock.recv(2048) 
             if not meta_response_raw:
                 print(f"{Fore.RED}Error: No metadata received from peer.{Style.RESET}")
                 if sock: sock.close()
@@ -288,7 +288,7 @@ class P2PClient:
             
             print(f"Received metadata: Enc_size={encrypted_size}, Orig_hash={original_hash_from_sender[:8]}..., Key_hex={file_key_hex_from_sender[:8]}...")
 
-            # 2. Decode the file_key from hex
+            
             try:
                 file_key_for_decryption = bytes.fromhex(file_key_hex_from_sender)
             except ValueError:
@@ -296,10 +296,10 @@ class P2PClient:
                 if sock: sock.close()
                 return False
 
-            # 3. Send 'ready' signal to sender
+            
             sock.send(b'ready')
 
-            # 4. Receive the ENCRYPTED file content
+            
             received_encrypted_chunks = []
             bytes_received = 0
             print(f"Downloading ENCRYPTED file '{file_name}' ({encrypted_size} bytes)...")
@@ -314,7 +314,7 @@ class P2PClient:
                 bytes_received += len(chunk)
                 progress = (bytes_received / encrypted_size) * 100
                 print(f"Download progress: {progress:.1f}%", end='\r')
-            print("\nENCRYPTED download complete.                                  ") # Spaces to clear progress
+            print("\nENCRYPTED download complete.                                  ") 
 
             full_encrypted_content = b''.join(received_encrypted_chunks)
             if len(full_encrypted_content) != encrypted_size:
@@ -322,7 +322,7 @@ class P2PClient:
                  if sock: sock.close()
                  return False
 
-            # 5. Decrypt the received content
+            
             print(f"Decrypting '{file_name}'...")
             try:
                 decrypted_content = crypto_utils.decrypt_file_content(full_encrypted_content, file_key_for_decryption)
@@ -334,11 +334,11 @@ class P2PClient:
                 return False
             print("Decryption successful.")
 
-            # 6. Calculate the hash of the (now decrypted) content
+            
             calculated_hash_of_decrypted_file = crypto_utils.hash_file_content(decrypted_content)
             print(f"Calculated hash of decrypted content: {calculated_hash_of_decrypted_file[:8]}...")
 
-            # 7. Compare hashes for integrity
+            
             if calculated_hash_of_decrypted_file == original_hash_from_sender:
                 print(f"{Fore.GREEN}Integrity check PASSED for '{file_name}'.{Style.RESET}")
                 
@@ -378,47 +378,47 @@ class P2PClient:
             return False
 
         file_name = os.path.basename(file_path)
-        # This dest_path will store the ENCRYPTED file
+        
         dest_path = os.path.join(self.shared_folder, file_name)
 
         try:
             with open(file_path, 'rb') as f:
                 original_content = f.read()
 
-            # 1. Generate a unique symmetric key for this file
-            file_key = crypto_utils.generate_symmetric_key() # From your crypto_utils
+            
+            file_key = crypto_utils.generate_symmetric_key() 
 
-            # 2. Encrypt the file content with this unique key
+            
             encrypted_content = crypto_utils.encrypt_file_content(original_content, file_key)
 
-            # 3. Store the encrypted content in the shared_folder
+            
             with open(dest_path, 'wb') as f:
                 f.write(encrypted_content)
             print(f"{Fore.GREEN}File '{file_name}' encrypted and saved to shared folder.{Style.RESET}")
 
-            # 4. Calculate the hash of the original, unencrypted file content
+            
             original_hash = crypto_utils.hash_file_content(original_content)
 
-            # 5. Store file_hash and file_key (hex-encoded) in metadata
+            
             metadata = self._load_file_metadata()
             metadata[file_name] = {
-                'hash': original_hash,    # Hash of the original content
-                'key': file_key.hex()     # Symmetric key for this file, hex-encoded
+                'hash': original_hash,    
+                'key': file_key.hex()     
             }
             self._save_file_metadata(metadata)
             print(f"Metadata (hash and key) for '{file_name}' saved.")
 
-            self._scan_shared_folder() # This updates self.shared_files (name, ENCRYPTED_size)
-            # You might want to trigger an update to the rendezvous server here if it's not periodic
-            # self._connect_to_rendezvous() # Or a more specific update function
+            self._scan_shared_folder() 
+            
+            
 
             return True
 
         except Exception as e:
             print(f"{Style.BOLD}{Fore.RED}Error sharing file '{file_name}': {e}{Style.RESET}")
-            # Consider cleanup if error occurs mid-process
+            
             if os.path.exists(dest_path) and 'encrypted_content' not in locals():
-                 # If dest_path was created but encryption failed before writing
+                 
                  try: os.remove(dest_path)
                  except: pass
             return False
@@ -486,38 +486,68 @@ class P2PClient:
     def register(self):
         users = self._load_users()
         username = input("Choose a username: ").strip()
+        if not username:
+            print(f"{Style.BOLD}{Fore.RED}Username cannot be empty.{Style.RESET}")
+            return False
         if username in users:
-            print(f"{Style.BOLD}{Fore.red}Username already exists. Try Again.{Style.reset}")
+            print(f"{Style.BOLD}{Fore.RED}Username already exists. Try Again.{Style.RESET}")
             return False
 
         password = input("Choose a password: ").strip()
-        hashed, salt = password_utils.hash_password(password)
-        users[username] = {'hash': hashed, 'salt': salt}
-        self._save_users(users)
-        print(f"{Style.BOLD}{Fore.green}Registration successful.{Style.reset}")
-        return True
+        if not password: # Basic validation for password
+            print(f"{Style.BOLD}{Fore.RED}Password cannot be empty.{Style.RESET}")
+            return False
+        try:
+            # hash_password now returns a single string (hash with embedded salt)
+            hashed_password_string = password_utils.hash_password(password)
+            users[username] = {'hash': hashed_password_string} # Store only the hash string
+            self._save_users(users)
+            print(f"{Style.BOLD}{Fore.GREEN}Registration successful with Argon2.{Style.RESET}")
+            return True
+        except Exception as e:
+            print(f"{Style.BOLD}{Fore.RED}Error during registration: {e}{Style.RESET}")
+            return False
 
     def login(self):
         if self.is_logged_in():
-            print(f"{Fore.magenta}Already logged in as '{self.logged_in_user}'. Please logout first.{Style.reset}")
-            return False
+            print(f"{Fore.MAGENTA}Already logged in as '{self.logged_in_user}'. Please logout first.{Style.RESET}")
+            return True # Or False, depending on desired behavior
 
         users = self._load_users()
         username = input("Username: ").strip()
-        password = input("Password: ").strip()
+        password = input("Password: ").strip() # Password input can be empty
 
         if username not in users:
-            print("User not found.")
+            print(f"{Style.BOLD}{Fore.RED}User '{username}' not found.{Style.RESET}")
             return False
 
-        stored_hash = users[username]['hash']
-        stored_salt = users[username]['salt']
-        if password_utils.verify_password(password, stored_hash, stored_salt):
-            self.logged_in_user = username
-            print(f"{Style.BOLD}{Fore.green}Logged in as {username}{Style.reset}")
-            return True
-        else:
-            print(f"{Style.BOLD}{Fore.red}Invalid password.{Style.reset}")
+        # The stored entry now only has 'hash'
+        stored_argon2_hash = users[username].get('hash')
+        if not stored_argon2_hash:
+            print(f"{Style.BOLD}{Fore.RED}Error: User '{username}' has no stored password hash.{Style.RESET}")
+            return False
+
+        try:
+            if password_utils.verify_password(password, stored_argon2_hash):
+                self.logged_in_user = username
+                print(f"{Style.BOLD}{Fore.GREEN}Logged in as {username} (Argon2 verified).{Style.RESET}")
+
+                # Optional: Rehash if needed
+                if password_utils.needs_rehash(stored_argon2_hash):
+                    print(f"{Fore.YELLOW}Password hash for {username} uses outdated parameters. Re-hashing...{Style.RESET}")
+                    try:
+                        new_hashed_password_string = password_utils.hash_password(password)
+                        users[username]['hash'] = new_hashed_password_string
+                        self._save_users(users)
+                        print(f"{Fore.GREEN}Password hash updated to new Argon2 parameters.{Style.RESET}")
+                    except Exception as e_rehash:
+                        print(f"{Style.BOLD}{Fore.RED}Error re-hashing password during login: {e_rehash}{Style.RESET}")
+                return True
+            else:
+                print(f"{Style.BOLD}{Fore.RED}Invalid password.{Style.RESET}")
+                return False
+        except Exception as e:
+            print(f"{Style.BOLD}{Fore.RED}Error during login: {e}{Style.RESET}")
             return False
         
     def is_logged_in(self):
@@ -547,7 +577,7 @@ class P2PClient:
                 print(f"{Fore.RED}Error: Requested file '{file_name}' not found in shared folder for sending.{Style.RESET}")
                 return
 
-            # 1. Lookup file_name in file_metadata.json to get its original hash and file_key
+            
             all_metadata = self._load_file_metadata()
             file_meta = all_metadata.get(file_name)
 
@@ -558,31 +588,31 @@ class P2PClient:
                 return
 
             original_content_hash = file_meta['hash']
-            file_key_hex = file_meta['key'] # This is the hex-encoded symmetric key
+            file_key_hex = file_meta['key'] 
 
-            # 2. Read the already ENCRYPTED content from shared_folder
+            
             with open(encrypted_file_path, 'rb') as f:
                 encrypted_content_to_send = f.read()
 
             encrypted_size = len(encrypted_content_to_send)
 
-            # 3. Protocol Change: Send metadata first
-            # (encrypted_size, original_content_hash, file_key_hex)
+            
+            
             meta_payload_for_download = {
-                'size': encrypted_size,              # Size of the ENCRYPTED file
-                'hash': original_content_hash,       # Hash of the ORIGINAL, unencrypted file
-                'key': file_key_hex                  # Hex-encoded symmetric key for this file
+                'size': encrypted_size,              
+                'hash': original_content_hash,       
+                'key': file_key_hex                  
             }
             client_socket.send(json.dumps(meta_payload_for_download).encode('utf-8'))
             print(f"Sent metadata for '{file_name}': enc_size={encrypted_size}, orig_hash={original_content_hash[:8]}..., key={file_key_hex[:8]}...")
 
-            # Wait for 'ready' signal from the downloader
+            
             ready_signal = client_socket.recv(1024)
             if ready_signal != b'ready':
                 print(f"{Fore.YELLOW}Downloader not ready for '{file_name}'. Aborting send.{Style.RESET}")
                 return
 
-            # 4. Send the ENCRYPTED file content in chunks
+            
             bytes_sent = 0
             buffer_size = 4096
             while bytes_sent < encrypted_size:
@@ -598,9 +628,9 @@ class P2PClient:
             print(f"{Fore.RED}Broken pipe while sending '{file_name}'. Peer may have disconnected.{Style.RESET}")
         except Exception as e:
             print(f"{Style.BOLD}{Fore.RED}Error sending file '{file_name}': {e}{Style.RESET}")
-            # Attempt to inform the client if possible
+            
             try:
                 error_msg = json.dumps({'error': f'Server error during send: {str(e)}'}).encode('utf-8')
                 client_socket.send(error_msg)
             except:
-                pass # Socket might already be closed
+                pass 

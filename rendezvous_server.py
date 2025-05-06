@@ -4,7 +4,7 @@ import json
 import time
 
 class RendezvousServer:
-    def __init__(self, host='0.0.0.0', port=5050):
+    def __init__(self, host='127.0.0.1', port=5050):
         self.host = host
         self.port = port
         self.server_socket = None

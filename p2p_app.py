@@ -142,7 +142,7 @@ def main():
     global logged_in
 
     parser = argparse.ArgumentParser(description="P2P File Sharing Application")
-    parser.add_argument("-s", "--server", default="localhost", help="Rendezvous server address")
+    parser.add_argument("-s", "--server", default="127.0.0.1", help="Rendezvous server address")
     parser.add_argument("-p", "--port", type=int, default=5050, help="Rendezvous server port")
     parser.add_argument("--receive-port", type=int, default=0, help="Specify port for receiving connections (0 for random)")
     parser.add_argument("--send-port", type=int, default=0, help="Specify port for sending connections (0 for random)")
