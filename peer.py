@@ -1063,115 +1063,166 @@ class P2PClient:
     def share_file(self, file_path: str) -> bool:
         """
         Encrypts a given file, saves it to the shared folder, and updates the encrypted metadata.
+        Attempts to notify the rendezvous server of the change.
         Returns True on success, False on failure.
         """
         if not self.is_logged_in():
             print(f"{Style.BOLD}{Fore.RED}Share Error: Please log in to share files.{Style.RESET}")
             return False
         
-        # Thread-safe check for MEK availability
-        with self.mek_lock:
+        with self.mek_lock: # Thread-safe check for MEK availability
             if not self.master_encryption_key:
                 print(f"{Style.BOLD}{Fore.RED}Share Error: Master Encryption Key not available. Please log in again.{Style.RESET}")
                 return False
-            # current_mek = self.master_encryption_key # No need to copy if only checking existence here
 
         if not os.path.exists(file_path):
             print(f"{Fore.RED}Share Error: Source file '{file_path}' does not exist.{Style.RESET}")
             return False
-        if not os.path.isfile(file_path): # Ensure it's a file, not a directory
+        if not os.path.isfile(file_path):
             print(f"{Fore.RED}Share Error: Source path '{file_path}' is not a file.{Style.RESET}")
             return False
 
         file_name = os.path.basename(file_path)
-        # Use the correct shared folder path attribute
+        # Use the correct shared folder path attribute from __init__
         encrypted_dest_path = os.path.join(self.shared_folder_path, file_name) 
 
-        # Check if file with the same name is already being shared (in our metadata)
-        # This is an important check to prevent accidental overwrite of metadata for a different original file
-        # that happens to have the same name.
-        # current_metadata = self._load_file_metadata() # MEK lock handled inside
-        # if file_name in current_metadata:
-        #     overwrite = input(f"{Fore.YELLOW}Warning: A file named '{file_name}' is already shared. Overwrite? (yes/no): {Style.RESET}").strip().lower()
-        #     if overwrite != 'yes':
-        #         print("Sharing cancelled by user.")
-        #         return False
-        # This check can be added if desired, for now, it overwrites.
-
         original_content = None
-        encrypted_content = None
+        encrypted_content_written = False # Flag to track if encrypted file was successfully written
         
         try:
-            # 1. Read original file content
             print(f"Reading original file '{file_path}'...")
             with open(file_path, 'rb') as f_orig:
                 original_content = f_orig.read()
-            if not original_content and os.path.getsize(file_path) > 0 : # Read failed or file became empty
-                print(f"{Fore.RED}Share Error: Failed to read content from '{file_path}' or file is empty but has size.{Style.RESET}")
+            
+            # Handle empty file case (allow sharing, but warn)
+            if not original_content and os.path.getsize(file_path) > 0 : 
+                print(f"{Fore.RED}Share Error: Failed to read content from '{file_path}' or file became empty after size check.{Style.RESET}")
                 return False
             if not original_content and os.path.getsize(file_path) == 0:
                 print(f"{Fore.YELLOW}Warning: Sharing an empty file: '{file_path}'.{Style.RESET}")
 
-
-            # 2. Generate symmetric key and encrypt content
             print(f"Encrypting '{file_name}'...")
             file_symmetric_key = crypto_utils.generate_symmetric_key()
-            encrypted_content = crypto_utils.encrypt_file_content(original_content, file_symmetric_key)
+            encrypted_content_bytes = crypto_utils.encrypt_file_content(original_content, file_symmetric_key)
 
-            # 3. Write encrypted content to shared folder
             print(f"Saving encrypted file to '{encrypted_dest_path}'...")
             with open(encrypted_dest_path, 'wb') as f_enc:
-                f_enc.write(encrypted_content)
+                f_enc.write(encrypted_content_bytes)
+            encrypted_content_written = True # Mark as successfully written
             print(f"{Fore.GREEN}File '{file_name}' encrypted and saved to shared folder.{Style.RESET}")
             
-            # 4. Calculate hash of original content
             original_hash = crypto_utils.hash_file_content(original_content)
             
-            # 5. Load existing metadata (MEK lock handled inside _load_file_metadata)
             print("Loading existing file metadata...")
-            metadata = self._load_file_metadata() 
-            # _load_file_metadata returns {} on error/not found, which is fine for updating.
-            # A more critical failure inside _load_file_metadata might warrant stopping here.
-            if not isinstance(metadata, dict): # Should always be a dict from _load_file_metadata
+            metadata = self._load_file_metadata() # MEK lock handled inside
+            if not isinstance(metadata, dict): 
                 print(f"{Style.BOLD}{Fore.RED}Share Error: Failed to load existing metadata correctly. Cannot update.{Style.RESET}")
-                self._try_remove_file(encrypted_dest_path, "Share Error Cleanup") # Cleanup encrypted file
+                if encrypted_content_written: # Only remove if it was written
+                    self._try_remove_file(encrypted_dest_path, "Share Error Cleanup - Metadata Load Failed")
                 return False
 
-            # 6. Update metadata with new/overwritten file entry
             metadata[file_name] = {
                 'hash': original_hash,    
                 'key': file_symmetric_key.hex() 
             }
             
-            # 7. Save updated metadata (MEK lock and encryption handled inside _save_file_metadata)
             print(f"Saving updated metadata for '{file_name}'...")
-            if not self._save_file_metadata(metadata): 
+            if not self._save_file_metadata(metadata): # MEK lock handled inside
                 print(f"{Style.BOLD}{Fore.RED}Share Error: Failed to save updated metadata. File sharing might be inconsistent.{Style.RESET}")
-                # Critical decision: Do we leave the encrypted file if metadata save fails?
-                # For consistency, it might be better to remove it.
-                self._try_remove_file(encrypted_dest_path, "Share Error Cleanup - Metadata Save Failed")
-                return False # Indicate failure
+                if encrypted_content_written:
+                    self._try_remove_file(encrypted_dest_path, "Share Error Cleanup - Metadata Save Failed")
+                return False 
             
             print(f"Metadata for '{file_name}' saved and encrypted successfully.")
 
-            # 8. Rescan shared folder to update internal list (lock handled inside _scan_shared_folder)
-            self._scan_shared_folder() 
+            self._scan_shared_folder() # Updates self.shared_files (lock handled inside)
+            
+            # <<< NOTIFY RENDEZVOUS OF THE UPDATE >>>
+            print(f"Attempting to notify rendezvous server of new/updated shared file '{file_name}'...")
+            self._notify_rendezvous_of_update() 
+            
             return True
 
         except (IOError, OSError) as e:
             print(f"{Style.BOLD}{Fore.RED}Share Error (File Operation): Failed to process file '{file_path}' or '{encrypted_dest_path}': {e.strerror}{Style.RESET}")
-            if encrypted_content and os.path.exists(encrypted_dest_path): # If encrypted file was written before error
+            if encrypted_content_written: 
                 self._try_remove_file(encrypted_dest_path, "Share File IO/OS Error Cleanup")
         except ValueError as e: # Can be from crypto_utils or other value issues
             print(f"{Style.BOLD}{Fore.RED}Share Error (Value Error): {e}{Style.RESET}")
-            if encrypted_content and os.path.exists(encrypted_dest_path):
+            if encrypted_content_written:
                 self._try_remove_file(encrypted_dest_path, "Share File Value Error Cleanup")
-        except Exception as e: # Catch-all for other unexpected errors
+        except Exception as e: 
             print(f"{Style.BOLD}{Fore.RED}Unexpected error sharing file '{file_name}': {type(e).__name__} - {e}{Style.RESET}")
-            # Attempt to clean up the encrypted file if it was created
-            if encrypted_content is not None and os.path.exists(encrypted_dest_path):
+            if encrypted_content_written: # Check flag instead of complex condition
                  self._try_remove_file(encrypted_dest_path, "Share File Unexpected Error Cleanup")
-        return False # Ensure False is returned on any exception path
+        return False
+    
+    def stop_sharing_file(self, file_name_to_stop: str) -> bool:
+        """
+        Stops sharing a specified file. This involves:
+        - Removing its entry from the (encrypted) file_metadata.json.
+        - Deleting the encrypted file from the shared folder.
+        - Updating the internal list of shared files and notifying the rendezvous server.
+        Returns True if the file was successfully un-shared, False otherwise.
+        """
+        if not self.is_logged_in():
+            print(f"{Style.BOLD}{Fore.RED}Stop Share Error: Please log in to manage shared files.{Style.RESET}")
+            return False
+        
+        with self.mek_lock: # Ensure MEK is available for metadata operations
+            if not self.master_encryption_key:
+                print(f"{Style.BOLD}{Fore.RED}Stop Share Error: MEK unavailable. Please log in again.{Style.RESET}")
+                return False
+
+        context_log_prefix = f"StopShare-{file_name_to_stop}"
+        print(f"{context_log_prefix}: Attempting to stop sharing...")
+
+        # 1. Load current metadata (MEK lock handled inside _load_file_metadata)
+        metadata = self._load_file_metadata()
+        if not isinstance(metadata, dict): # Should be a dict, even if empty
+            print(f"{Style.BOLD}{Fore.RED}{context_log_prefix}: Failed to load metadata. Cannot stop sharing.{Style.RESET}")
+            return False
+
+        if file_name_to_stop not in metadata:
+            print(f"{Fore.YELLOW}{context_log_prefix}: File is not currently in shared metadata (already unshared or never shared).{Style.RESET}")
+            # Optionally, still run _scan_shared_folder and notify rendezvous to ensure consistency
+            self._scan_shared_folder()
+            self._notify_rendezvous_of_update()
+            return True # Considered success as the file is not shared
+
+        # 2. Remove file entry from metadata
+        del metadata[file_name_to_stop]
+        print(f"{context_log_prefix}: Removed '{file_name_to_stop}' from metadata.")
+
+        # 3. Save updated metadata (MEK lock and encryption handled inside)
+        if not self._save_file_metadata(metadata):
+            print(f"{Style.BOLD}{Fore.RED}{context_log_prefix}: Failed to save updated metadata. File may still appear shared locally until next successful save.{Style.RESET}")
+            # This is a problematic state. The file might still be on disk.
+            # For now, we'll return False, but the user might need to manually resolve or retry.
+            return False
+        print(f"{context_log_prefix}: Updated metadata saved successfully.")
+
+        # 4. Delete the encrypted file from the shared folder
+        encrypted_file_path = os.path.join(self.shared_folder_path, file_name_to_stop)
+        if os.path.exists(encrypted_file_path):
+            try:
+                os.remove(encrypted_file_path)
+                print(f"{context_log_prefix}: Deleted encrypted file '{encrypted_file_path}'.")
+            except (IOError, OSError) as e:
+                print(f"{Fore.YELLOW}{context_log_prefix}: Warning - Could not delete file '{encrypted_file_path}': {e.strerror}. Please remove manually if needed.{Style.RESET}")
+                # Continue, as metadata is updated, but warn user.
+        else:
+            print(f"{Fore.YELLOW}{context_log_prefix}: Encrypted file '{encrypted_file_path}' not found for deletion (already removed?).{Style.RESET}")
+
+        # 5. Rescan shared folder to update internal list (self.shared_files)
+        self._scan_shared_folder() # Lock handled inside
+
+        # 6. Notify rendezvous server of the change in shared files
+        print(f"{context_log_prefix}: Notifying rendezvous server of updated shared file list...")
+        self._notify_rendezvous_of_update()
+        
+        print(f"{Fore.GREEN}{context_log_prefix}: Successfully stopped sharing '{file_name_to_stop}'.{Style.RESET}")
+        return True
 
 
     def list_shared_files(self) -> list:
@@ -1447,93 +1498,122 @@ class P2PClient:
             print(f"{Style.BOLD}{Fore.RED}Unexpected error during registration: {type(e).__name__} - {e}{Style.RESET}")
             return False
 
-    def login(self) -> bool:
-        """Logs in an existing user, verifies password, and derives MEK."""
-        if self.is_logged_in():
-            print(f"{Fore.MAGENTA}Already logged in as '{self.logged_in_user}'. Please logout first.{Style.RESET}")
-            return True # Or False, depending on desired behavior for already logged in
-
-        users = self._load_users()
-        username = input("Username: ").strip()
+    def register(self, username: str = None, password: str = None) -> bool: # Added optional params
+        """Registers a new user. Uses provided credentials or prompts if None."""
+        users = self._load_users() 
         
-        # Acquire mek_lock before accessing/setting _current_password_for_mek
-        with self.mek_lock:
-            self._current_password_for_mek = input("Password: ").strip()
-            # Use a local variable for password verification to avoid holding lock longer than necessary
-            # if password verification itself is slow, though Argon2 verify is fast if params match.
-            password_to_verify = self._current_password_for_mek
-
-        if not username or not password_to_verify: # Check local copy
-            print(f"{Style.BOLD}{Fore.RED}Username and password cannot be empty.{Style.RESET}")
-            self._clear_mek_and_password() # Clears MEK and _current_password_for_mek under lock
+        # Use provided username or prompt if None
+        input_username = username if username is not None else input("Choose a username: ").strip()
+        if not input_username:
+            print(f"{Style.BOLD}{Fore.RED}Username cannot be empty.{Style.RESET}")
+            return False
+        if input_username in users:
+            print(f"{Style.BOLD}{Fore.RED}Username '{input_username}' already exists. Please try a different one.{Style.RESET}")
             return False
 
-        if username not in users:
-            print(f"{Style.BOLD}{Fore.RED}User '{username}' not found.{Style.RESET}")
+        # Use provided password or prompt if None
+        input_password = password if password is not None else input("Choose a password: ").strip()
+        if not input_password: 
+            print(f"{Style.BOLD}{Fore.RED}Password cannot be empty.{Style.RESET}")
+            return False
+            
+        try:
+            hashed_password_string = password_utils.hash_password(input_password)
+            users[input_username] = {'hash': hashed_password_string} 
+            self._save_users(users) 
+            print(f"{Style.BOLD}{Fore.GREEN}Registration successful for user '{input_username}'.{Style.RESET}")
+            return True
+        except (ValueError, TypeError) as e: # From hash_password
+            print(f"{Style.BOLD}{Fore.RED}Password hashing error during registration: {e}{Style.RESET}")
+            return False
+        except Exception as e: 
+            print(f"{Style.BOLD}{Fore.RED}Unexpected error during registration: {type(e).__name__} - {e}{Style.RESET}")
+            return False
+
+    def login(self, username: str = None, password: str = None) -> bool: # Added optional params
+        """Logs in an existing user. Uses provided credentials or prompts if None."""
+        if self.is_logged_in():
+            print(f"{Fore.MAGENTA}Already logged in as '{self.logged_in_user}'. Please logout first.{Style.RESET}")
+            return True 
+
+        users = self._load_users()
+        
+        input_username = username if username is not None else input("Username: ").strip()
+        
+        # Use mek_lock when dealing with _current_password_for_mek
+        # password_to_verify will hold the actual password used (either from param or input)
+        with self.mek_lock:
+            # If password param is given, use it, else prompt.
+            # Store it in _current_password_for_mek for MEK derivation if login succeeds.
+            self._current_password_for_mek = password if password is not None else input("Password: ").strip()
+            password_to_verify = self._current_password_for_mek 
+
+        if not input_username or not password_to_verify:
+            print(f"{Style.BOLD}{Fore.RED}Username and password cannot be empty.{Style.RESET}")
+            self._clear_mek_and_password() # This handles its own lock
+            return False
+
+        if input_username not in users:
+            print(f"{Style.BOLD}{Fore.RED}User '{input_username}' not found.{Style.RESET}")
             self._clear_mek_and_password()
             return False
 
-        user_data = users.get(username) # Use .get for safety, though checked above
-        if not user_data: # Should not happen if username in users passed
-             print(f"{Style.BOLD}{Fore.RED}Internal error: User data not found for '{username}'.{Style.RESET}")
+        user_data = users.get(input_username)
+        if not user_data: # Should be caught by 'username not in users' but good for robustness
+             print(f"{Style.BOLD}{Fore.RED}Internal error: User data not found for '{input_username}'.{Style.RESET}")
              self._clear_mek_and_password(); return False
 
         stored_hash_str = user_data.get('hash')
         if not stored_hash_str or not stored_hash_str.startswith('$argon2'):
-            print(f"{Style.BOLD}{Fore.RED}Error: User '{username}' has an invalid or missing password hash.{Style.RESET}")
+            print(f"{Style.BOLD}{Fore.RED}Error: User '{input_username}' has an invalid or missing password hash.{Style.RESET}")
             self._clear_mek_and_password()
             return False
         
         try:
-            # password_utils.verify_password can raise ValueError or other Argon2 exceptions
             if password_utils.verify_password(password_to_verify, stored_hash_str):
-                self.logged_in_user = username # Set before MEK derivation
+                self.logged_in_user = input_username 
+                self._derive_and_set_mek(password_to_verify) # This handles its own mek_lock
                 
-                # Derive MEK using the verified password (password_to_verify)
-                self._derive_and_set_mek(password_to_verify) # Handles its own mek_lock
-                
-                print(f"{Style.BOLD}{Fore.GREEN}Logged in as {username} (Argon2 verified).{Style.RESET}")
+                print(f"{Style.BOLD}{Fore.GREEN}Logged in as {input_username} (Argon2 verified).{Style.RESET}")
                 
                 with self.mek_lock: # Check MEK under lock
                     if not self.master_encryption_key:
                         print(f"{Style.BOLD}{Fore.YELLOW}Warning: MEK derivation failed post-login. Metadata operations will be affected.{Style.RESET}")
                     else:
-                        # Attempt to load metadata now that MEK is available
-                        print(f"Loading file metadata for user {username}...")
-                        # _load_file_metadata handles its own MEK lock for reading self.master_encryption_key
-                        loaded_meta = self._load_file_metadata() 
+                        print(f"Loading file metadata for user {input_username}...")
+                        loaded_meta = self._load_file_metadata() # This handles its own mek_lock
                         if not isinstance(loaded_meta, dict): 
                             print(f"{Style.BOLD}{Fore.YELLOW}Warning: Could not properly load file metadata after login.{Style.RESET}")
 
                 if password_utils.needs_rehash(stored_hash_str):
-                    print(f"{Fore.YELLOW}Password hash for {username} uses outdated Argon2 parameters. Re-hashing...{Style.RESET}")
+                    print(f"{Fore.YELLOW}Password hash for {input_username} uses outdated Argon2 parameters. Re-hashing...{Style.RESET}")
                     try:
-                        # Rehash with the verified password
                         new_hashed_password_string = password_utils.hash_password(password_to_verify)
-                        users[username]['hash'] = new_hashed_password_string 
-                        self._save_users(users) # Handles its own errors
+                        users[input_username]['hash'] = new_hashed_password_string 
+                        self._save_users(users) 
                         print(f"{Fore.GREEN}Password hash updated to new Argon2 parameters.{Style.RESET}")
-                    except (ValueError, TypeError) as e_rehash_hash: # From hash_password
+                    except (ValueError, TypeError) as e_rehash_hash: 
                         print(f"{Style.BOLD}{Fore.RED}Error during password re-hashing (hashing step): {e_rehash_hash}{Style.RESET}")
-                    except Exception as e_rehash_other: # Other errors during rehash
+                    except Exception as e_rehash_other: 
                         print(f"{Style.BOLD}{Fore.RED}Unexpected error re-hashing password during login: {e_rehash_other}{Style.RESET}")
                 
-                # Clear the temporarily stored password from self._current_password_for_mek
-                # _clear_mek_and_password() will be called on logout or if login fails on other paths.
-                # Here, on success, we can clear just the temp password part.
+                # On successful login, _current_password_for_mek (which holds the plaintext password)
+                # should be cleared if it's no longer needed. _derive_and_set_mek has used it.
+                # _clear_mek_and_password() clears both MEK and this temp password.
+                # However, we want to keep the MEK. So, just clear the temp password.
                 with self.mek_lock:
                     self._current_password_for_mek = None
                 return True
             else:
                 print(f"{Style.BOLD}{Fore.RED}Invalid password.{Style.RESET}")
-                self._clear_mek_and_password() # Clears MEK and _current_password_for_mek
+                self._clear_mek_and_password() 
                 return False
         except (ValueError, TypeError) as e_verify: # From verify_password
-            print(f"{Style.BOLD}{Fore.RED}Error during password verification for {username}: {e_verify}{Style.RESET}")
+            print(f"{Style.BOLD}{Fore.RED}Error during password verification for {input_username}: {e_verify}{Style.RESET}")
             self._clear_mek_and_password()
             return False
-        except Exception as e: # Catch-all for other unexpected errors during login process
-            print(f"{Style.BOLD}{Fore.RED}Unexpected error during login for {username}: {type(e).__name__} - {e}{Style.RESET}")
+        except Exception as e: 
+            print(f"{Style.BOLD}{Fore.RED}Unexpected error during login for {input_username}: {type(e).__name__} - {e}{Style.RESET}")
             self._clear_mek_and_password() 
             return False
         
@@ -1550,6 +1630,47 @@ class P2PClient:
         else:
             print(f"{Fore.YELLOW}No user is currently logged in.{Style.RESET}") # Changed color for consistency
 
+    
+    def _notify_rendezvous_of_update(self):
+        """Attempts to send an immediate file list update to the rendezvous server."""
+        # Use the correct attribute for rendezvous connection status
+        if not self.running or not self.connected_to_rendezvous:
+            # print(f"Debug ({self.client_name}): Cannot notify rendezvous, not running or connected.")
+            return
+
+        sock = None
+        try:
+            # _scan_shared_folder() was called by share_file before this,
+            # so self.shared_files should be up-to-date.
+            with self.shared_files_lock:
+                files_payload = list(self.shared_files) # Send a copy
+            
+            # print(f"Debug ({self.client_name}): Notifying rendezvous with {len(files_payload)} files.")
+            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            sock.settimeout(5.0) # Shorter timeout for a quick update
+            sock.connect((self.rendezvous_host, self.rendezvous_port))
+            
+            update_data = {
+                'command': 'update_files',
+                'client_id': self.client_id,
+                'files': files_payload
+            }
+            sock.sendall(json.dumps(update_data).encode('utf-8'))
+            print(f"{Fore.CYAN}Info ({self.client_name}): Sent immediate file list update to rendezvous.{Style.RESET}")
+        except (socket.error, json.JSONDecodeError, ConnectionRefusedError, socket.timeout, BrokenPipeError) as e:
+            # These errors are common if rendezvous is temporarily down or busy.
+            # The periodic update will try again later.
+            print(f"{Fore.YELLOW}Warning ({self.client_name}): Failed to send immediate file list update to rendezvous: {type(e).__name__} - {e}{Style.RESET}")
+        except Exception as e: # Catch any other unexpected error
+            print(f"{Fore.YELLOW}Warning ({self.client_name}): Unexpected error during immediate rendezvous update: {type(e).__name__} - {e}{Style.RESET}")
+        finally:
+            if sock:
+                try: sock.shutdown(socket.SHUT_RDWR)
+                except (socket.error, OSError): pass
+                try: sock.close()
+                except (socket.error, OSError): pass
+    
+    
     def printSessionInfo(self):
         """Prints information about the current user session."""
         if self.is_logged_in():
