@@ -12,6 +12,7 @@ CipherShare is a peer-to-peer (P2P) file sharing application implemented in Pyth
 -   **Secure Local Key Storage:**
     -   The metadata file (`file_metadata.json`), which stores symmetric keys for shared files, is itself encrypted on the client's machine using a key derived from the user's password (Argon2 KDF + AES).
 -   **File Integrity Verification:** SHA-256 hashes ensure files are not corrupted or tampered with during transfer.
+-   **File Management:** Users can share files and also stop sharing files they previously shared.
 -   **Peer Discovery:** Utilizes a rendezvous server for discovering other peers on the network.
 -   **Direct P2P File Transfers:** Files are transferred directly between peers after secure key exchange.
 -   **Command-Line Interface:** Simple CLI for interacting with the application.
@@ -25,7 +26,9 @@ CipherShare is a peer-to-peer (P2P) file sharing application implemented in Pyth
 -   `utils/`: Directory containing utility modules:
     -   `crypto_utils.py`: Cryptographic functions (AES, RSA, hashing, KDF salt generation).
     -   `password_utils.py`: Password hashing and Argon2-based key derivation functions.
--   `tests/`: Directory containing unit tests (e.g., `test_crypto_utils.py`, `test_password_utils.py`).
+-   `tests/`: Directory containing automated tests:
+    -   `test_crypto_utils.py`, `test_password_utils.py`: Unit tests for utility modules.
+    -   `test_integration.py`: Integration tests for end-to-end scenarios.
 -   `client_data_<client_name>/`: Directory created by each client instance to store:
     -   `private_key.pem`, `public_key.pem`: Client's RSA key pair.
     -   `metadata.salt`: Salt used for deriving the key to encrypt `file_metadata.json`.
@@ -34,7 +37,7 @@ CipherShare is a peer-to-peer (P2P) file sharing application implemented in Pyth
 -   `downloads_<client_name>/`: Default directory for downloaded files.
 -   `user_registry.json`: Stores usernames and their Argon2-hashed passwords.
 -   `Dockerfile` and `docker-compose.yml`: Docker setup for easy deployment.
--   `run_local_test.py`: Script to facilitate local testing of multiple client instances.
+-   `run_local_test.py`: Script to facilitate manual local testing of multiple client instances.
 -   `requirements.txt`: Lists Python package dependencies.
 
 ## Running with Docker
@@ -116,34 +119,31 @@ CipherShare is a peer-to-peer (P2P) file sharing application implemented in Pyth
 
 1.  **Start Clients:** Launch `p2p_app.py` with a unique `--client-name` for each instance.
 2.  **Register/Login:** Each client will prompt for registration or login.
-3.  **Share Files:**
-    *   Select "Share a file".
-    *   The file will be encrypted (AES-256) and stored in `shared_files_<client_name>`. Its metadata (including the AES key) will be stored in an encrypted `file_metadata.json`.
-4.  **Discover Peers & Files:**
-    *   Use "Refresh peer list".
-    *   Use "List available files from peers".
-5.  **Download Files:**
-    *   Select a file. The file's AES key is securely exchanged (RSA). Files are transferred in chunks.
-    *   The downloaded file is decrypted, integrity-checked, and saved to `downloads_<client_name>`.
+3.  **Share Files:** Select "Share a file". The file will be encrypted and stored in `shared_files_<client_name>`. Its metadata will be stored in an encrypted `file_metadata.json`.
+4.  **Stop Sharing Files:** Select "Stop sharing a file" to remove a file from your shared list and delete its encrypted copy.
+5.  **Discover Peers & Files:** Use "Refresh peer list" and "List available files from peers".
+6.  **Download Files:** Select a file. The file's AES key is securely exchanged (RSA). Files are transferred in chunks. The downloaded file is decrypted, integrity-checked, and saved to `downloads_<client_name>`.
 
 ## Security Overview
 
 CipherShare implements several layers of security:
 
--   **User Authentication:** Passwords are hashed using Argon2id, a strong, memory-hard hashing algorithm.
--   **Confidentiality (Files at Rest on Sharer):**
-    -   Original files are encrypted using AES-256 before storage.
-    -   The `file_metadata.json` (containing file AES keys) is itself encrypted using AES-256. The key for this (Master Encryption Key - MEK) is derived from the user's password via Argon2id (as a KDF) and a client-specific salt. The MEK is only held in memory during a logged-in session.
--   **Confidentiality (Files in Transit):**
-    -   File content is transferred in its AES-256 encrypted form (sent in chunks).
-    -   The symmetric AES key for the file is exchanged securely using RSA encryption.
--   **Integrity:** SHA-256 hashes verify file integrity after download and decryption.
--   **Client-Side Keys:** RSA private keys and the metadata salt are stored locally per client instance.
+-   **User Authentication:** Passwords are hashed using Argon2id.
+-   **Confidentiality (Files at Rest on Sharer):** Files are AES-256 encrypted. The `file_metadata.json` (containing file AES keys) is also AES-256 encrypted, using a key derived from the user's password via Argon2id (KDF).
+-   **Confidentiality (Files in Transit):** File content is transferred AES-256 encrypted. Symmetric AES keys are exchanged using RSA encryption.
+-   **Integrity:** SHA-256 hashes verify file integrity.
+-   **Client-Side Keys:** RSA private keys and the metadata salt are stored locally per client.
+
+## Testing
+
+The project includes:
+-   **Unit Tests:** Located in the `tests/` directory (e.g., `test_crypto_utils.py`, `test_password_utils.py`). Run with `python -m unittest discover tests`.
+-   **Integration Tests:** `tests/test_integration.py` covers end-to-end scenarios. Run with `python -m unittest tests.test_integration`.
+-   **Manual E2E Testing:** Use `run_local_test.py` to launch multiple client instances for manual testing of the CLI application.
 
 ## Notes
 
--   The rendezvous server is only used for peer discovery and does not handle file content or encryption keys. Communication with the rendezvous server is currently unencrypted.
--   File transfers are direct P2P connections.
--   For testing on a single machine, rendezvous connections default to `localhost`.
--   Ensure each client instance uses a unique `--client-name` for data persistence. If no name is provided, a new UUID-based name is generated on each run, leading to non-persistent behavior.
--   The `user_registry.json` (containing hashed passwords) and client-specific directories like `client_data_<client_name>` (containing private keys and salts) are sensitive. Protect access to these files and directories on the filesystem.
+-   The rendezvous server is only for peer discovery; it doesn't handle file content or keys. Communication with it is currently unencrypted.
+-   File transfers are direct P2P.
+-   Use unique `--client-name` for data persistence.
+-   Protect `user_registry.json` and `client_data_<client_name>/` directories.

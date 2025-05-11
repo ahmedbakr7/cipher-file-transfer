@@ -71,17 +71,29 @@ class RendezvousServer:
 
 
     def stop_server(self):
-        """Signals the server to stop and closes the server socket."""
-        print("Rendezvous server shutting down...")
-        self.running = False
+        """
+        Signals the server to stop its main loop and attempts to close the server socket.
+        The main server loop in start() should detect self.running == False due to its timeout on accept().
+        """
+        print(f"{Fore.CYAN}Rendezvous server shutdown initiated...{Style.RESET}")
+        self.running = False # Signal the main accept loop in start() to terminate
+
         if self.server_socket:
+            # Closing the server_socket here will cause the blocking self.server_socket.accept()
+            # in the start() method's loop to raise a socket.error (e.g., EBADF or WSAENOTSOCK),
+            # which will then break that loop if self.running is also False.
+            # The timeout on accept() is another mechanism for the loop to check self.running.
             try:
-                # To unblock accept(), connect to it briefly (optional, OS dependent)
-                # Or rely on the timeout on accept()
                 self.server_socket.close()
+                print(f"{Fore.CYAN}Rendezvous server socket closed attempt by stop_server().{Style.RESET}")
             except socket.error as e:
-                print(f"{Fore.YELLOW}Warning: Error closing server socket: {e}{Style.RESET}")
-        print("Rendezvous server shutdown signal sent.")
+                # This might happen if the socket is already closed or in a bad state.
+                print(f"{Fore.YELLOW}Warning: Error closing server socket during stop_server(): {e}{Style.RESET}")
+        
+        # The main server thread (in start()) will see self.running is False 
+        # (either due to timeout on accept() or error from closed socket)
+        # and then proceed to its own finally block for cleanup.
+        print(f"{Fore.CYAN}Rendezvous server shutdown signal processed. Main loop should terminate shortly.{Style.RESET}")
 
 
     def handle_client(self, client_socket: socket.socket, address: tuple):
